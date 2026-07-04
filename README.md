@@ -1,6 +1,6 @@
 # UnleashedRecomp — Android (Adreno) port
 
-An **unofficial, work‑in‑progress Android port** of
+An **unofficial, Android port** of
 [UnleashedRecomp](https://github.com/hedge-dev/UnleashedRecomp) — the static
 recompilation of the Xbox 360 version of *Sonic Unleashed*. This repository is a
 fork of the upstream project with an Android (ARM64) target added, using a
