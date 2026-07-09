@@ -310,7 +310,8 @@ add_library(fmt
 )
 
 target_include_directories(fmt PUBLIC
-    ${PROJECT_SOURCE_DIR}/include
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
 )
 
 add_library(fmt::fmt ALIAS fmt)
