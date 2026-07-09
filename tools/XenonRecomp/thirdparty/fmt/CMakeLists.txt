@@ -300,10 +300,21 @@ add_headers(FMT_HEADERS args.h base.h chrono.h color.h compile.h core.h format.h
                         xchar.h)
 set(FMT_SOURCES src/format.cc)
 
-add_module_library(fmt src/fmt.cc FALLBACK
+# add_module_library(fmt src/fmt.cc FALLBACK
                    ${FMT_SOURCES} ${FMT_HEADERS} README.md ChangeLog.md
                    IF FMT_MODULE)
+# add_library(fmt::fmt ALIAS fmt)
+add_library(fmt
+    src/format.cc
+    src/os.cc
+)
+
+target_include_directories(fmt PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(fmt::fmt ALIAS fmt)
+
 if (FMT_MODULE)
   enable_module(fmt)
 elseif (FMT_OS)
