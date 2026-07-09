@@ -2,7 +2,9 @@ cmake_minimum_required (VERSION 3.20)
 
 option(UNLEASHED_RECOMP_ANDROID "Build for Android. Does not use vcpkg; expects prebuilt host tool paths via UNLEASHED_RECOMP_HOST_*." OFF)
 
-if(NOT UNLEASHED_RECOMP_ANDROID AND NOT DEFINED ENV{VCPKG_ROOT})
+if(NOT UNLEASHED_RECOMP_ANDROID
+   AND NOT UNLEASHED_RECOMP_HOST_TOOLS_ONLY
+   AND NOT DEFINED ENV{VCPKG_ROOT})
     message(FATAL_ERROR "VCPKG_ROOT is not defined!")
 endif()
 
