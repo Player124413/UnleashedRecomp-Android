@@ -50,22 +50,23 @@
             }
         },
         {
-            "name": "x64-Clang-HostTools",
-            "displayName": "HostTools",
-            "inherits": "windows-base",
-            "architecture": {
-                "value": "x64",
-                "strategy": "external"
-            },
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "VCPKG_TARGET_TRIPLET": {
-                    "value": "x64-windows-static",
-                    "type": "STRING"
-                },
-                "UNLEASHED_RECOMP_HOST_TOOLS_ONLY": "ON"
-            }
-        },
+    "name": "x64-Clang-HostTools",
+    "displayName": "HostTools",
+    "generator": "Ninja",
+    "binaryDir": "${sourceDir}/out/build/${presetName}",
+    "installDir": "${sourceDir}/out/install/${presetName}",
+    "architecture": {
+        "value": "x64",
+        "strategy": "external"
+    },
+    "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl.exe",
+        "CMAKE_CXX_COMPILER": "clang-cl.exe",
+        "CMAKE_LINKER": "lld-link.exe",
+        "CMAKE_BUILD_TYPE": "Release",
+        "UNLEASHED_RECOMP_HOST_TOOLS_ONLY": "ON"
+    }
+},
         {
             "name": "x64-Clang-Release",
             "displayName": "Release",
