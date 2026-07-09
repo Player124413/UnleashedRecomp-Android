@@ -74,7 +74,11 @@ jobs:
         Get-ChildItem -Path out/build/x64-Clang-HostTools -Recurse -Filter *.exe
 
 
-    - name- name: Fetch game assets from private assets repo
+    #
+    # Game Assets
+    #
+    
+    - name: Fetch game assets from private assets repo
       shell: pwsh
       run: |
         $headers = @{ Authorization = "token $env:ASSETS_REPO_TOKEN" }
