@@ -138,11 +138,11 @@ jobs:
           -DANDROID_ABI=arm64-v8a `
           -DANDROID_PLATFORM=android-29 `
           -DUNLEASHED_RECOMP_ANDROID=ON `
-          -DUNLEASHED_RECOMP_HOST_XENON_RECOMP="$pwd/out/build/x64-Clang-HostTools/tools/XenonRecomp.exe" `
-          -DUNLEASHED_RECOMP_HOST_XENOS_RECOMP="$pwd/out/build/x64-Clang-HostTools/tools/XenosRecomp.exe" `
+          -DUNLEASHED_RECOMP_HOST_XENON_RECOMP="$pwd/out/build/x64-Clang-HostTools/tools/XenonRecomp/XenonRecomp.exe" `
+          -DUNLEASHED_RECOMP_HOST_XENOS_RECOMP="$pwd/out/build/x64-Clang-HostTools/tools/XenosRecomp/XenosRecomp.exe" `
           -DUNLEASHED_RECOMP_HOST_FILE_TO_C="$pwd/out/build/x64-Clang-HostTools/tools/file_to_c.exe" `
-          -DUNLEASHED_RECOMP_HOST_X_DECOMPRESS="$pwd/out/build/x64-Clang-HostTools/tools/x_decompress.exe"
-
+          -DUNLEASHED_RECOMP_HOST_X_DECOMPRESS="$pwd/out/build/x64-Clang-HostTools/tools/x_decompress/x_decompress.exe"
+        Get-ChildItem -Recurse -Filter CMakeLists.txt | Select-String "file_to_c"
 
     #
     # Build native library
