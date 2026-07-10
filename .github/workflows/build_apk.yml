@@ -64,9 +64,12 @@ jobs:
     - name: Build host tools
       shell: pwsh
       run: |
+        $configPath = "$PWD\UnleashedRecompLib\config\SWA.toml" -replace '\\','/'
+        $headerPath = "$PWD\tools\XenonRecomp\XenonUtils\ppc_context.h" -replace '\\','/'
+
         cmake --preset x64-Clang-HostTools `
-          -DXENON_RECOMP_CONFIG_FILE_PATH="$PWD\UnleashedRecompLib\config\SWA.toml" `
-          -DXENON_RECOMP_HEADER_FILE_PATH="$PWD\tools\XenonRecomp\XenonUtils\ppc_context.h"
+          -DXENON_RECOMP_CONFIG_FILE_PATH="$configPath" `
+          -DXENON_RECOMP_HEADER_FILE_PATH="$headerPath"
         cmake --build out/build/x64-Clang-HostTools --target XenonRecomp --target XenosRecomp --target file_to_c --target x_decompress
     
         
