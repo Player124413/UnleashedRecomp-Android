@@ -181,6 +181,7 @@ jobs:
         magick resources/icon.png -resize 96x96   android-apk/app/src/main/res/mipmap-xhdpi/ic_launcher.png
         magick resources/icon.png -resize 144x144 android-apk/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
         magick resources/icon.png -resize 192x192 android-apk/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
     
     - name: Build APK
       shell: cmd
@@ -189,6 +190,12 @@ jobs:
         gradlew.bat assembleDebug
 
 
+    - name: Rename APK
+      shell: pwsh
+      run: |
+        Rename-Item -Path "android-apk/app/build/outputs/apk/debug/app-debug.apk" -NewName "UnleashedRecomp.apk"
+
+        
     #
     # Upload APK
     #
