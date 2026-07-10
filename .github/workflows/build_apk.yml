@@ -64,10 +64,12 @@ jobs:
     - name: Build host tools
       shell: pwsh
       run: |
-        cmake --preset x64-Clang-HostTools
+        cmake --preset x64-Clang-HostTools ^
+          -DXENON_RECOMP_CONFIG_FILE_PATH="%CD%\UnleashedRecompLib\config\SWA.toml" ^
+          -DXENON_RECOMP_HEADER_FILE_PATH="%CD%\tools\XenonRecomp\XenonUtils\ppc_context.h"
         cmake --build out/build/x64-Clang-HostTools --target XenonRecomp --target XenosRecomp --target file_to_c --target x_decompress
 
-
+        
     - name: Locate host tools
       shell: pwsh
       run: |
