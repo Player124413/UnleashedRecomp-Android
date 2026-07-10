@@ -409,7 +409,7 @@ if (renderer != null && renderer.matches(".*Adreno \\(TM\\) 6\\d\\d.*")) {
     if (!tuDebug.exists()) {
         try (FileWriter writer = new FileWriter(tuDebug)) {
             writer.write("sysmem");
-        }
+        } catch (IOException e) {}
     }
 }
 
