@@ -389,14 +389,6 @@ if (UNLEASHED_RECOMP_FLATPAK)
 endif()
 
 if (ANDROID)
-    # Game files are pushed manually via `adb push` + `run-as` (debug builds only; no
-    # installer wizard on Android, see main.cpp __ANDROID__ guards) into the app's private
-    # internal storage. This avoids /sdcard's FUSE-based scoped storage layer, which produced
-    # spurious "Permission denied" errors on stat() shortly after directory creation there.
-    target_compile_definitions(UnleashedRecomp PRIVATE
-        "GAME_INSTALL_DIRECTORY=\"/data/data/org.libsdl.app/files/UnleashedRecomp\""
-    )
-
     target_link_libraries(UnleashedRecomp PRIVATE adrenotools)
 endif()
 
