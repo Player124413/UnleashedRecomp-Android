@@ -36,16 +36,26 @@ namespace os::android
         return path;
     }
 
-    const std::filesystem::path & GetExternalFilesDir()
+    const std::filesystem::path & GetExternalMediaDir()
+{
+    static std::filesystem::path path = []() -> std::filesystem::path
     {
-        static std::filesystem::path path = []() -> std::filesystem::path
-        {
-            const char *storagePath = SDL_AndroidGetExternalStoragePath();
-            return (storagePath != nullptr) ? std::filesystem::path(storagePath) : std::filesystem::path();
-        }();
+        const std::filesystem::path &external = GetExternalFilesDir();
+        if (external.empty())
+            return std::filesystem::path();
 
-        return path;
-    }
+        // external = /storage/emulated/0/Android/data/<package>/files
+        auto package = external.parent_path().filename();
+
+        return external.parent_path()  // <package>
+                        .parent_path()  // data
+                        .parent_path()  // Android
+            / "media"
+            / package;
+    }();
+
+    return path;
+}
 
     const std::filesystem::path & GetDataRoot()
     {
