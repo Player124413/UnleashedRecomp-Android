@@ -36,7 +36,7 @@ namespace os::android
         return path;
     }
 
-    const std::filesystem::path & GetExternalMediaDir()
+    const std::filesystem::path & GetExternalFilesDir()
 {
     static std::filesystem::path path = []() -> std::filesystem::path
     {
@@ -74,16 +74,8 @@ if (!external.empty())
 {
     // external = /storage/emulated/0/Android/data/<package>/files
 
-    auto package = external.parent_path().filename();
-
-    std::filesystem::path result =
-        external.parent_path()      // <package>
-                .parent_path()      // data
-                .parent_path()      // Android
-        / "media"
-        / package
-        / "UnleashedRecomp";
-
+    std::filesystem::path result = externalMedia / "UnleashedRecomp";
+    
     std::filesystem::create_directories(result, ec);
                 if (!ProbeDirWritable(result))
                 {
