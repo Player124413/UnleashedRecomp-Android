@@ -76,7 +76,7 @@ const std::filesystem::path & GetExternalFilesDir2()
 
             // Legacy layout: game files pushed over adb straight into internal app storage.
             // Keep using it when populated so existing installs are unaffected.
-            std::filesystem::path legacy(GAME_INSTALL_DIRECTORY);
+            std::filesystem::path legacy = GetInternalFilesDir() / "UnleashedRecomp";
             if (std::filesystem::exists(legacy / "game", ec))
                 return legacy;
 
