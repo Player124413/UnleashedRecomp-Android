@@ -31,7 +31,7 @@
 // freeze. Mirror every log line, plus captured stderr (where plume/Turnip print
 // Vulkan errors and GPU-fault messages), into a plain text file on external app
 // storage that a tester can copy off over MTP with no root and no adb:
-//   Android/data/org.libsdl.app/files/log.txt   (next to driver_import/)
+//   Android/data/<pkg>/files/log.txt   (next to driver_import/)
 
 static std::mutex s_logMutex;
 static FILE* s_logFile = nullptr;

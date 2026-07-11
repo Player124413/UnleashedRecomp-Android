@@ -42,6 +42,8 @@ static constexpr const char *BUNDLED_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a73
 // "turnip/" directory under the same name - the extracted copy would permanently shadow the
 // packaged asset and driver updates shipped in the APK would never be seen again.
 static constexpr const char *BUNDLED_DRIVER_ASSET = "bundled_driver/vulkan.unleashed26_1_wfm_a732.so";
+static constexpr const char *VAUZI_710_DRIVER_NAME = "vulkan.vauzi710_v2_7.so";
+static constexpr const char *VAUZI_710_DRIVER_ASSET = "bundled_driver/vulkan.vauzi710_v2_7.so";
 static constexpr const char *DEFAULT_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *LAST_IMPORTED_DRIVER_FILE = "last_imported_driver.txt";
 static constexpr const char *VULKAN_STARTUP_STATE_FILE = "vulkan_startup_state.txt";
@@ -134,6 +136,7 @@ static const char *VulkanDriverName(EAndroidVulkanDriver driver)
     {
         case EAndroidVulkanDriver::System:   return "System";
         case EAndroidVulkanDriver::Bundled:  return "Bundled";
+        case EAndroidVulkanDriver::Vauzi710: return "Vauzi710";
         case EAndroidVulkanDriver::Imported: return "Imported";
         case EAndroidVulkanDriver::Auto:
         default:                             return "Auto";
@@ -277,7 +280,7 @@ static bool ReadVulkanStartupState(VulkanStartupState &state, bool &stateFileExi
             "version=%u\nphase=%63s\nconfigured_driver=%u\nconfigured_render_mode=%u",
             &version, phase, &configuredDriver, &configuredRenderMode) != 4 ||
         version != 1 ||
-        configuredDriver > unsigned(EAndroidVulkanDriver::Imported) ||
+        configuredDriver > unsigned(EAndroidVulkanDriver::Vauzi710) ||
         configuredRenderMode > unsigned(EAndroidRenderMode::Sysmem))
     {
         return false;
@@ -650,6 +653,57 @@ static bool ImportDriverPackage(const std::filesystem::path &zipPath, const std:
 // via driver_name.txt, and moved to driver_import/installed/ so it isn't re-processed every
 // launch. Imported binaries must never be rewritten: exact inputs are required for reliable
 // A/B tests and a byte-pattern patch cannot establish compatibility with an unknown build.
+static void ScanDriverImportDir(const std::filesystem::path &importDir, const std::filesystem::path &turnipDir)
+{
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(importDir, ec))
+    {
+        if (!entry.is_regular_file(ec))
+            continue;
+
+        const std::filesystem::path extension = entry.path().extension();
+        std::string fileName = entry.path().filename().string();
+        std::string selectedName;
+
+        if (extension == ".so")
+        {
+            std::vector<uint8_t> driver;
+            if (!ReadWholeFile(entry.path(), driver))
+            {
+                LOGF_ERROR("Driver import: failed to read {}", fileName);
+                continue;
+            }
+
+            if (!WriteWholeFile(turnipDir / fileName, driver.data(), driver.size()))
+            {
+                LOGF_ERROR("Driver import: failed to install {} to internal storage.", fileName);
+                continue;
+            }
+
+            selectedName = fileName;
+        }
+        else if (extension == ".zip")
+        {
+            if (!ImportDriverPackage(entry.path(), turnipDir, selectedName))
+                continue;
+        }
+        else
+        {
+            continue;
+        }
+
+        WriteTextFile(turnipDir / "driver_name.txt", selectedName.c_str());
+        WriteTextFile(turnipDir / LAST_IMPORTED_DRIVER_FILE, selectedName.c_str());
+        std::filesystem::path installedDir = importDir / "installed";
+        std::filesystem::create_directories(installedDir, ec);
+        std::filesystem::rename(entry.path(), installedDir / fileName, ec);
+        if (ec)
+            std::filesystem::remove(entry.path(), ec);
+
+        LOGF("Driver import: installed {} and selected {}.", fileName, selectedName);
+    }
+}
+
 static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
 {
     const std::filesystem::path &externalDir = os::android::GetExternalFilesDir();
@@ -704,69 +758,42 @@ static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
         "https://github.com/WearyConcern1165/ExynosTools into this folder to\n"
         "use its compatibility layer instead of the plain system driver.\n");
 
-    for (const auto &entry : std::filesystem::directory_iterator(importDir, ec))
+    ScanDriverImportDir(importDir, turnipDir);
+
+    // Twin folder under Android/media: on-device file managers can browse it on
+    // Android 11+ (unlike Android/data), so phone-only users can drop drivers there.
+    const std::filesystem::path &mediaDir = os::android::GetExternalMediaDir();
+    if (!mediaDir.empty())
     {
-        if (!entry.is_regular_file(ec))
-            continue;
-
-        const std::filesystem::path extension = entry.path().extension();
-        std::string fileName = entry.path().filename().string();
-        std::string selectedName;
-
-        if (extension == ".so")
-        {
-            std::vector<uint8_t> driver;
-            if (!ReadWholeFile(entry.path(), driver))
-            {
-                LOGF_ERROR("Driver import: failed to read {}", fileName);
-                continue;
-            }
-
-            if (!WriteWholeFile(turnipDir / fileName, driver.data(), driver.size()))
-            {
-                LOGF_ERROR("Driver import: failed to install {} to internal storage.", fileName);
-                continue;
-            }
-
-            selectedName = fileName;
-        }
-        else if (extension == ".zip")
-        {
-            if (!ImportDriverPackage(entry.path(), turnipDir, selectedName))
-                continue;
-        }
-        else
-        {
-            continue;
-        }
-
-        WriteTextFile(turnipDir / "driver_name.txt", selectedName.c_str());
-        WriteTextFile(turnipDir / LAST_IMPORTED_DRIVER_FILE, selectedName.c_str());
-        std::filesystem::path installedDir = importDir / "installed";
-        std::filesystem::create_directories(installedDir, ec);
-        std::filesystem::rename(entry.path(), installedDir / fileName, ec);
-        if (ec)
-            std::filesystem::remove(entry.path(), ec);
-
-        LOGF("Driver import: installed {} and selected {}.", fileName, selectedName);
+        std::filesystem::path mediaImportDir = mediaDir / "driver_import";
+        std::filesystem::create_directories(mediaImportDir, ec);
+        WriteTextFile(mediaImportDir / "readme.txt",
+            "Optional: drop a Vulkan driver here as a plain .so file or as a whole\n"
+            "driver-package .zip (AdrenoTools/ExynosTools format). This folder is\n"
+            "scanned on launch exactly like Android/data/<app>/files/driver_import/;\n"
+            "processed files move to the installed/ subfolder. See the readme.txt\n"
+            "there for TU_DEBUG and capture options. The log file (log.txt) is\n"
+            "available through the launcher's log button.\n");
+        ScanDriverImportDir(mediaImportDir, turnipDir);
     }
 }
 
-// Provision the app-owned bundled-driver slot. A different imported driver remains selected
-// through driver_name.txt, but the bundled slot itself follows APK updates byte-for-byte.
-static void InstallBundledDriverIfNeeded(const std::filesystem::path &turnipDir)
+// Provision the app-owned bundled-driver slots. A different imported driver remains selected
+// through driver_name.txt, but both bundled slots follow APK updates byte-for-byte.
+static void InstallBundledDriverAsset(const std::filesystem::path &turnipDir,
+    const char *driverName, const char *assetName)
 {
-    std::filesystem::path driverPath = turnipDir / BUNDLED_DRIVER_NAME;
+    std::filesystem::path driverPath = turnipDir / driverName;
 
     std::vector<uint8_t> driver;
-    if (!ReadAssetFile(BUNDLED_DRIVER_ASSET, driver))
+    if (!ReadAssetFile(assetName, driver))
     {
         // APK built without the bundled driver - nothing to provision.
         return;
     }
 
-    LOGF("Bundled Vulkan driver asset: {} bytes, fingerprint {:016x}.",
-        driver.size(), DriverFingerprint(driver));
+    LOGF("Bundled Vulkan driver asset {}: {} bytes, fingerprint {:016x}.",
+        driverName, driver.size(), DriverFingerprint(driver));
 
     std::vector<uint8_t> installedDriver;
     const bool alreadyInstalled = ReadWholeFile(driverPath, installedDriver) && installedDriver == driver;
@@ -780,7 +807,12 @@ static void InstallBundledDriverIfNeeded(const std::filesystem::path &turnipDir)
 
         LOGF("Updated bundled Vulkan driver at {}.", driverPath.string());
     }
+}
 
+static void InstallBundledDriversIfNeeded(const std::filesystem::path &turnipDir)
+{
+    InstallBundledDriverAsset(turnipDir, BUNDLED_DRIVER_NAME, BUNDLED_DRIVER_ASSET);
+    InstallBundledDriverAsset(turnipDir, VAUZI_710_DRIVER_NAME, VAUZI_710_DRIVER_ASSET);
     WriteTextFileIfMissing(turnipDir / "driver_name.txt", BUNDLED_DRIVER_NAME);
 }
 
@@ -792,7 +824,7 @@ static void EnsureVulkanDriverInstalled(const std::string &turnipDirString)
     std::filesystem::create_directories(turnipDir, ec);
 
     ProcessDriverImportDir(turnipDir);
-    InstallBundledDriverIfNeeded(turnipDir);
+    InstallBundledDriversIfNeeded(turnipDir);
 }
 
 static std::string GetCustomDriverName(const std::string &turnipDir)
@@ -838,7 +870,7 @@ static std::string GetImportedDriverName(const std::string &turnipDir)
     // Migrate installs made before the Driver UI existed. Their selected imported
     // driver only lived in driver_name.txt.
     std::string legacyName = GetCustomDriverName(turnipDir);
-    if (legacyName != BUNDLED_DRIVER_NAME)
+    if (legacyName != BUNDLED_DRIVER_NAME && legacyName != VAUZI_710_DRIVER_NAME)
     {
         WriteTextFile(turnipPath / LAST_IMPORTED_DRIVER_FILE, legacyName.c_str());
         return legacyName;
@@ -1039,6 +1071,11 @@ void *AndroidGetCustomVulkanLoader()
             LOG("Android Vulkan driver mode: Bundled.");
             break;
 
+        case EAndroidVulkanDriver::Vauzi710:
+            driverName = VAUZI_710_DRIVER_NAME;
+            LOG("Android Vulkan driver mode: Adreno 710 (Vauzi v2.7).");
+            break;
+
         case EAndroidVulkanDriver::Imported:
             driverName = GetImportedDriverName(turnipDir);
             LOG("Android Vulkan driver mode: Imported.");
@@ -1117,7 +1154,15 @@ void *AndroidGetCustomVulkanLoader()
         return nullptr;
     }
 
-    ApplyRenderMode(g_runtimeRenderMode, true);
+    EAndroidRenderMode effectiveRenderMode = g_runtimeRenderMode;
+    if (effectiveRenderMode == EAndroidRenderMode::Auto &&
+        g_runtimeVulkanDriver == EAndroidVulkanDriver::Vauzi710)
+    {
+        effectiveRenderMode = EAndroidRenderMode::Sysmem;
+        LOG("Adreno 710 Vauzi driver: Auto render mode selects Sysmem as recommended by the driver author.");
+    }
+
+    ApplyRenderMode(effectiveRenderMode, true);
     ApplyLayerSettingsOverride(turnipDir);
 
     void *libVulkan = adrenotools_open_libvulkan(

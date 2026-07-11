@@ -405,10 +405,7 @@ public final class ModManagerActivity extends Activity {
     }
 
     private File getActiveGameRoot() {
-        File internal = new File(getFilesDir(), "UnleashedRecomp");
-        File externalBase = getExternalFilesDir(null);
-        File external = externalBase != null ? new File(externalBase, "UnleashedRecomp") : internal;
-        return new File(internal, "game").isDirectory() ? internal : external;
+        return AppStorage.activeGameRoot(this);
     }
 
     private static File findSourceDatabase(File userDirectory, File managerDatabase) {

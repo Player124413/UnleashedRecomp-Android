@@ -17,4 +17,59 @@
     <string name="mod_manager_error_directory">Cannot create configuration directory: %1$s</string>
     <string name="mod_manager_error_save">Cannot save the mod database: %1$s</string>
     <string name="mod_manager_error_files">Android Files could not be opened.</string>
+
+    <string name="launcher_title">Unleashed Recomp</string>
+    <string name="launcher_subtitle">Check the installation and configure the game before launch.</string>
+    <string name="launcher_game_files">Game files</string>
+    <string name="launcher_open_files">Open game folder</string>
+    <string name="launcher_recheck">Check again</string>
+    <string name="launcher_graphics">Graphics driver</string>
+    <string name="launcher_driver">Vulkan driver</string>
+    <string name="launcher_render_mode">Turnip render mode</string>
+    <string name="launcher_import_driver">Import .so / .zip</string>
+    <string name="launcher_driver_folder">Driver folder</string>
+    <string name="launcher_controls">Controls</string>
+    <string name="launcher_touch_policy">On-screen controls</string>
+    <string name="launcher_edit_layout">Arrange touch controls</string>
+    <string name="launcher_mods">Mods</string>
+    <string name="launcher_mods_summary">Enable compatible HMM/UMM mods and set their priority.</string>
+    <string name="launcher_manage_mods">Manage mods</string>
+    <string name="launcher_debug">Debug options</string>
+    <string name="launcher_show_fps">Show FPS</string>
+    <string name="launcher_skip_intro">Skip intro logos</string>
+    <string name="launcher_validation">Vulkan synchronization validation (slow)</string>
+    <string name="launcher_gfx_capture">Record GFXReconstruct trace (very large and slow)</string>
+    <string name="launcher_open_logs">Open logs and captures</string>
+    <string name="launcher_play">Launch game</string>
+    <string name="launcher_driver_pending">%1$d driver package(s) will be installed on the next launch.</string>
+    <string name="launcher_driver_installed">Imported driver available: %1$s</string>
+    <string name="launcher_driver_builtin">Bundled Turnip drivers and the system driver are available. No imported driver found.</string>
+    <string name="launcher_driver_recovery">The previous Vulkan startup did not finish. Auto recovery will use a safer driver; choose System here if the problem repeats.</string>
+    <string name="launcher_log_found">Latest log found (%1$s).</string>
+    <string name="launcher_log_missing">No log yet. A log is created when the game starts.</string>
+    <string name="game_ready_all_dlc">Ready to launch. Base game, update and all DLC were detected.</string>
+    <string name="game_ready_missing_dlc">Ready to launch. Base game and update detected; DLC packs: %1$d of %2$d.</string>
+    <string name="error_title">Cannot continue</string>
+    <string name="error_storage_create">The app cannot create its storage folder:\n%1$s\n\nCheck free space and storage availability.</string>
+    <string name="error_storage_write">The game folder is not writable:\n%1$s\n\nIt may have been created by adb or another user. Delete it and let the app recreate it.</string>
+    <string name="error_game_missing">Game files are not installed. Copy the extracted Xbox 360 dump folders game, update and patched into:\n%1$s\n\nDo not copy an APK, PC game files or a shortcut.</string>
+    <string name="error_game_partial">The installation is incomplete or damaged. Missing required files:%1$s\n\nExpected root:\n%2$s</string>
+    <string name="error_game_nested">Game files appear to be nested in the wrong folder (%1$s). Move game, update, patched and optional dlc folders directly into:\n%2$s</string>
+    <string name="error_settings_save">Could not save settings: %1$s</string>
+    <string name="error_layout_editor">Could not start the layout editor: %1$s</string>
+    <string name="error_layout_requires_game">The layout editor uses the game renderer, so a valid game installation is required.</string>
+    <string name="error_driver_extension">Choose a plain Vulkan .so file or an AdrenoTools/ExynosTools .zip package.</string>
+    <string name="error_driver_copy">Could not import the driver: %1$s</string>
+    <string name="error_open_files">Android Files could not open the application folder.</string>
+    <string name="driver_imported">%1$s was copied. It will be validated and installed at game launch.</string>
+
+    <string-array name="driver_labels">
+        <item>Auto (recommended)</item><item>System</item><item>Bundled Turnip</item><item>Adreno 710 (Vauzi)</item><item>Imported</item>
+    </string-array>
+    <string-array name="render_mode_labels">
+        <item>Auto (recommended)</item><item>GMEM</item><item>Sysmem</item>
+    </string-array>
+    <string-array name="touch_policy_labels">
+        <item>Auto</item><item>Always on</item><item>Off</item>
+    </string-array>
 </resources>

@@ -1,5 +1,22 @@
 # Bundled Turnip driver
 
+The APK contains two selectable Turnip builds.
+
+## Adreno 710 (Vauzi)
+
+`vulkan.vauzi710_v2_7.so` is the unmodified `libvulkan_freedreno.so` from
+[Vauzi-17/710 release 2.7](https://github.com/Vauzi-17/710/releases/tag/2.7),
+published 2026-07-09. Its release ZIP SHA-256 is
+`ebc6cac062f89cb34fc73176ea9092b90dffa71e83e28df9f470d664fad88ee0`.
+The extracted driver binary SHA-256 is
+`636c7d20cbcaec8ce00f3ee88f4fa0ed8c2312d59dbb9664a7b63e98a387fdb6`.
+The package identifies itself as Mesa 26.2.0 / Vulkan 1.4.354 and targets
+Adreno 710/720/722. The app exposes it as **Adreno 710 (Vauzi)** and maps
+Render Mode **Auto** to `TU_DEBUG=sysmem`, matching the author's stability
+recommendation. Explicit GMEM and Sysmem selections remain available.
+
+## Universal Unleashed build
+
 `vulkan.unleashed26_1_wfm_a732.so` — the **"univ" build (2026-07-05)**.
 
 > ⚠️ The filename is **historical** (it used to be the a725/a732/a750 build) and
@@ -36,7 +53,9 @@
   APK assets, so an asset under `turnip/` would be permanently shadowed by its
   own extracted copy and APK driver updates would never provision.
 - To try a different Turnip build without rebuilding the app, drop a plain `.so`
-  into `Android/data/org.libsdl.app/files/driver_import/` on the device.
+  into `Android/data/com.sega.sonicunr/files/driver_import/` (from a PC over MTP)
+  or `Android/media/com.sega.sonicunr/driver_import/` (browsable by on-device
+  file managers) on the device.
 
 ## ⚠️ TU_DEBUG must stay `none`
 The WFM fix is **compiled in**. On a source build like this, setting

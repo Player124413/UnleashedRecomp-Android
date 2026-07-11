@@ -13,4 +13,59 @@
     <string name="mod_manager_error_directory">Не удалось создать каталог настроек: %1$s</string>
     <string name="mod_manager_error_save">Не удалось сохранить базу модов: %1$s</string>
     <string name="mod_manager_error_files">Не удалось открыть системное приложение «Файлы».</string>
+
+    <string name="launcher_title">Unleashed Recomp</string>
+    <string name="launcher_subtitle">Проверьте установку и настройте игру перед запуском.</string>
+    <string name="launcher_game_files">Файлы игры</string>
+    <string name="launcher_open_files">Открыть папку игры</string>
+    <string name="launcher_recheck">Проверить снова</string>
+    <string name="launcher_graphics">Графический драйвер</string>
+    <string name="launcher_driver">Драйвер Vulkan</string>
+    <string name="launcher_render_mode">Режим рендера Turnip</string>
+    <string name="launcher_import_driver">Импорт .so / .zip</string>
+    <string name="launcher_driver_folder">Папка драйверов</string>
+    <string name="launcher_controls">Управление</string>
+    <string name="launcher_touch_policy">Экранные кнопки</string>
+    <string name="launcher_edit_layout">Настроить расположение кнопок</string>
+    <string name="launcher_mods">Моды</string>
+    <string name="launcher_mods_summary">Включайте совместимые моды HMM/UMM и задавайте их приоритет.</string>
+    <string name="launcher_manage_mods">Управление модами</string>
+    <string name="launcher_debug">Отладка</string>
+    <string name="launcher_show_fps">Показывать FPS</string>
+    <string name="launcher_skip_intro">Пропускать вступительные ролики</string>
+    <string name="launcher_validation">Проверка синхронизации Vulkan (медленно)</string>
+    <string name="launcher_gfx_capture">Записывать трассу GFXReconstruct (очень большой файл, медленно)</string>
+    <string name="launcher_open_logs">Открыть логи и трассы</string>
+    <string name="launcher_play">Запустить игру</string>
+    <string name="launcher_driver_pending">Пакетов драйвера для установки при следующем запуске: %1$d.</string>
+    <string name="launcher_driver_installed">Доступен импортированный драйвер: %1$s</string>
+    <string name="launcher_driver_builtin">Доступны системный и встроенные драйверы Turnip. Импортированный драйвер не найден.</string>
+    <string name="launcher_driver_recovery">Предыдущий запуск Vulkan не завершился. Автовосстановление выберет безопасный драйвер; если ошибка повторится, выберите здесь «Системный».</string>
+    <string name="launcher_log_found">Найден последний лог (%1$s).</string>
+    <string name="launcher_log_missing">Лога пока нет. Он появится после запуска игры.</string>
+    <string name="game_ready_all_dlc">Можно запускать. Найдены основная игра, обновление и все DLC.</string>
+    <string name="game_ready_missing_dlc">Можно запускать. Найдены основная игра и обновление; пакетов DLC: %1$d из %2$d.</string>
+    <string name="error_title">Нельзя продолжить</string>
+    <string name="error_storage_create">Не удалось создать папку приложения:\n%1$s\n\nПроверьте свободное место и доступность накопителя.</string>
+    <string name="error_storage_write">Нет доступа на запись в папку игры:\n%1$s\n\nВозможно, её создали через adb от другого пользователя. Удалите папку и позвольте приложению создать её заново.</string>
+    <string name="error_game_missing">Файлы игры не установлены. Скопируйте папки game, update и patched из распакованного дампа Xbox 360 в:\n%1$s\n\nAPK, файлы ПК-версии и ярлык игры не подходят.</string>
+    <string name="error_game_partial">Установка неполная или повреждена. Не найдены обязательные файлы:%1$s\n\nОжидаемая корневая папка:\n%2$s</string>
+    <string name="error_game_nested">Похоже, файлы игры вложены в лишнюю папку (%1$s). Переместите папки game, update, patched и необязательную dlc непосредственно в:\n%2$s</string>
+    <string name="error_settings_save">Не удалось сохранить настройки: %1$s</string>
+    <string name="error_layout_editor">Не удалось запустить редактор управления: %1$s</string>
+    <string name="error_layout_requires_game">Редактор использует рендер игры, поэтому сначала нужна корректная установка файлов игры.</string>
+    <string name="error_driver_extension">Выберите обычную библиотеку Vulkan .so или пакет AdrenoTools/ExynosTools в формате .zip.</string>
+    <string name="error_driver_copy">Не удалось импортировать драйвер: %1$s</string>
+    <string name="error_open_files">Не удалось открыть папку приложения в системных «Файлах».</string>
+    <string name="driver_imported">%1$s скопирован. Драйвер будет проверен и установлен при запуске игры.</string>
+
+    <string-array name="driver_labels">
+        <item>Авто (рекомендуется)</item><item>Системный</item><item>Встроенный Turnip</item><item>Adreno 710 (Vauzi)</item><item>Импортированный</item>
+    </string-array>
+    <string-array name="render_mode_labels">
+        <item>Авто (рекомендуется)</item><item>GMEM</item><item>Sysmem</item>
+    </string-array>
+    <string-array name="touch_policy_labels">
+        <item>Авто</item><item>Всегда включены</item><item>Выключены</item>
+    </string-array>
 </resources>

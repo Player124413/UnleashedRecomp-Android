@@ -8,14 +8,20 @@ namespace os::android
     // Empty if SDL/JNI is not ready yet, so never call this from a static initializer.
     const std::filesystem::path & GetInternalFilesDir();
 
-    // App-specific external files directory (e.g. /storage/emulated/0/Android/data/org.libsdl.app/files).
+    // App-specific external files directory (e.g. /storage/emulated/0/Android/data/<pkg>/files).
     // Reachable from a PC over USB (MTP) without root and needs no runtime permissions.
     // Empty if unavailable; never call from a static initializer.
     const std::filesystem::path & GetExternalFilesDir();
 
+    // App-specific media directory (e.g. /storage/emulated/0/Android/media/<pkg>).
+    // Unlike Android/data, on-device file managers can browse it on Android 11+,
+    // so users can drop game files there without a PC. Empty if unavailable.
+    const std::filesystem::path & GetExternalMediaDir();
+
     // Root directory for game files and user data (config/saves). Prefers the legacy
     // internal install layout (game files pushed over adb before the APK became
-    // distributable); otherwise an "UnleashedRecomp" directory on external app storage,
-    // which users can populate from a PC without root.
+    // distributable), then a populated "UnleashedRecomp" directory on external app
+    // storage, then a populated one under Android/media; defaults to external app
+    // storage, which users can populate from a PC without root.
     const std::filesystem::path & GetDataRoot();
 }

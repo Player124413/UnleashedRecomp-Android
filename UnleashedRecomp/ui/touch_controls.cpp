@@ -26,7 +26,7 @@
 // On-screen touch controls with a drag-to-arrange layout editor.
 //
 // Every control (stick, A/B/X/Y, LB/RB, LT/RT, Start/Back) has its own editable
-// position. Tapping the on-screen EDIT button enters an editor where each control
+// position. The Android launcher requests the editor for one launch; each control
 // can be dragged, the whole set resized, or reset to defaults. The layout is saved
 // to <data>/touch_layout.ini and reloaded on the next launch.
 //
@@ -363,6 +363,10 @@ g_sdlEventListenerForTouchControls;
 
 bool TouchControls::IsVisible()
 {
+    // The launcher-requested layout editor must remain reachable even when the
+    // user's normal touch-control policy is Off.
+    if (g_edit)
+        return true;
 #ifdef __ANDROID__
     switch (Config::TouchControls.Value)
     {
@@ -394,6 +398,17 @@ void TouchControls::Init()
     // The glyph atlas is owned by ButtonGuide (initialised before us). Load the
     // saved on-screen layout, if any.
     LoadLayout();
+#ifdef __ANDROID__
+    // A one-shot marker is used instead of a permanent in-game EDIT overlay. Java
+    // creates it before starting SDL and we consume it as soon as the renderer is ready.
+    const std::filesystem::path marker = os::android::GetDataRoot() / "touch_layout_edit.txt";
+    std::error_code ec;
+    if (std::filesystem::exists(marker, ec))
+    {
+        g_edit = true;
+        std::filesystem::remove(marker, ec);
+    }
+#endif
 }
 
 void TouchControls::Draw()
@@ -449,14 +464,6 @@ void TouchControls::Draw()
     ImFont* font = ImGui::GetFont();
     const float fontPx = vh * 0.030f;
 
-    auto hitFresh = [&](ImVec2 c, float hw, float hh) -> bool
-    {
-        for (const auto& f : fresh)
-            if (f.pos.x >= c.x - hw && f.pos.x <= c.x + hw && f.pos.y >= c.y - hh && f.pos.y <= c.y + hh)
-                return true;
-        return false;
-    };
-
     auto tapBox = [&](ImVec2 c, float hw, float hh, const char* label, bool accent)
     {
         const ImU32 bg = accent ? IM_COL32(70, 120, 200, 220) : IM_COL32(0, 0, 0, 180);
@@ -471,19 +478,6 @@ void TouchControls::Draw()
     // -----------------------------------------------------------------------
     if (!g_edit)
     {
-        // EDIT toggle button (top centre).
-        const ImVec2 gearC(vw * 0.5f, vh * 0.050f);
-        const float gearHW = vw * 0.050f;
-        const float gearHH = vh * 0.038f;
-        if (hitFresh(gearC, gearHW, gearHH))
-        {
-            g_edit = true;
-            g_state = {};
-            g_stickFingerId = (SDL_FingerID)-1;
-            g_prevIds = std::move(curIds);
-            return;
-        }
-
         XAMINPUT_GAMEPAD st{};
 
         // ---- Left analog stick ----
@@ -578,9 +572,6 @@ void TouchControls::Draw()
             st.wButtons |= XAMINPUT_GAMEPAD_BACK;
 
         g_state = st;
-
-        // Draw the EDIT button last so it sits on top.
-        tapBox(gearC, gearHW, gearHH, "EDIT", false);
 
         g_prevIds = std::move(curIds);
         return;

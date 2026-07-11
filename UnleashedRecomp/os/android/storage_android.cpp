@@ -47,6 +47,36 @@ namespace os::android
         return path;
     }
 
+    const std::filesystem::path & GetExternalMediaDir()
+    {
+        static std::filesystem::path path = []() -> std::filesystem::path
+        {
+            // SDL has no accessor for Android/media, so derive it from the external
+            // files path: .../Android/data/<pkg>/files -> .../Android/media/<pkg>.
+            const std::filesystem::path &external = GetExternalFilesDir();
+            if (external.empty())
+                return {};
+
+            std::string str = external.string();
+            const std::string marker = "/Android/data/";
+            size_t markerPos = str.find(marker);
+            if (markerPos == std::string::npos)
+                return {};
+
+            size_t pkgBegin = markerPos + marker.size();
+            size_t pkgEnd = str.find('/', pkgBegin);
+            std::string pkg = (pkgEnd == std::string::npos)
+                ? str.substr(pkgBegin)
+                : str.substr(pkgBegin, pkgEnd - pkgBegin);
+            if (pkg.empty())
+                return {};
+
+            return std::filesystem::path(str.substr(0, markerPos)) / "Android" / "media" / pkg;
+        }();
+
+        return path;
+    }
+
     const std::filesystem::path & GetDataRoot()
     {
         static std::filesystem::path root = []() -> std::filesystem::path
@@ -54,16 +84,49 @@ namespace os::android
             std::error_code ec;
 
             // Legacy layout: game files pushed over adb straight into internal app storage.
-            // Keep using it when populated so existing installs are unaffected.
-            std::filesystem::path legacy(GAME_INSTALL_DIRECTORY);
+            // Keep using it when populated so existing installs are unaffected. Resolved at
+            // runtime so it always tracks the installed package id.
+            std::filesystem::path legacy = !GetInternalFilesDir().empty()
+                ? GetInternalFilesDir() / "UnleashedRecomp"
+                : std::filesystem::path(GAME_INSTALL_DIRECTORY);
             if (std::filesystem::exists(legacy / "game", ec))
                 return legacy;
 
             const std::filesystem::path &external = GetExternalFilesDir();
+
+            // Android/media fallback: on-device file managers can browse it on Android 11+
+            // (unlike Android/data), so phone-only users can drop game files there. Only
+            // picked when populated; external app storage stays the default target.
+            const std::filesystem::path &media = GetExternalMediaDir();
+            if (!media.empty())
+            {
+                std::filesystem::path mediaRoot = media / "UnleashedRecomp";
+                bool externalPopulated = !external.empty() &&
+                    std::filesystem::exists(external / "UnleashedRecomp" / "game", ec);
+                if (!externalPopulated && std::filesystem::exists(mediaRoot / "game", ec) &&
+                    ProbeDirWritable(mediaRoot))
+                {
+                    return mediaRoot;
+                }
+            }
+
             if (!external.empty())
             {
                 std::filesystem::path result = external / "UnleashedRecomp";
                 std::filesystem::create_directories(result, ec);
+
+                // Create the media folder too so it is discoverable from an on-device file
+                // manager, and keep the media scanner away from game assets placed there.
+                if (!media.empty())
+                {
+                    std::filesystem::create_directories(media / "UnleashedRecomp", ec);
+                    std::filesystem::path noMedia = media / ".nomedia";
+                    if (!std::filesystem::exists(noMedia, ec))
+                    {
+                        if (FILE *file = fopen(noMedia.c_str(), "wb"))
+                            fclose(file);
+                    }
+                }
 
                 if (!ProbeDirWritable(result))
                 {

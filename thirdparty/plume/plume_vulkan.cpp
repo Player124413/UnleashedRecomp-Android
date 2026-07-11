@@ -2394,6 +2394,15 @@ namespace plume {
 
         VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
+            // Per the spec oldSwapchain is retired even when creation fails, and vk is left
+            // undefined by the failed call. Destroy the old swapchain and retry from scratch:
+            // keeping it alive holds the native window, which makes some proprietary Android
+            // drivers fail every retry with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR (0xC46535FF).
+            if (createInfo.oldSwapchain != VK_NULL_HANDLE) {
+                vkDestroySwapchainKHR(commandQueue->device->vk, createInfo.oldSwapchain, nullptr);
+                createInfo.oldSwapchain = VK_NULL_HANDLE;
+            }
+            vk = VK_NULL_HANDLE;
             fprintf(stderr, "vkCreateSwapchainKHR failed with error code 0x%X.\n", res);
             return false;
         }

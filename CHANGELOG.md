@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Unified Android launcher
+
+- Replaced the direct SDL home-screen entry with a lightweight launcher that validates the game installation before startup and provides driver/render-mode, touch-control, FPS, intro-skip, Vulkan validation and GFXReconstruct settings.
+- Added launcher actions for importing Vulkan `.so`/`.zip` packages, opening game/transfer folders, viewing logs, managing mods and starting the touch-layout editor.
+- Moved the mod manager behind the unified launcher so the app exposes a single home-screen icon.
+- Added shared Java storage-path handling so the launcher, mod manager and DocumentsProvider select the same active game root as native code.
+- Changed the Android application id to `com.sega.sonicunr`, advanced the APK to version code 10 / `1.5.0-roadmap-v35`, and added English and Russian launcher resources.
+
+### Storage and touch controls
+
+- Added `Android/media/com.sega.sonicunr` as an on-device-file-manager-friendly fallback for game files and driver imports while preserving populated internal and `Android/data` installations.
+- Resolve the internal files directory from SDL at runtime instead of relying only on a compiled package path, and create `.nomedia` for media-storage game assets.
+- Replaced the permanent in-game touch-control EDIT button with a one-shot launcher action; the editor remains accessible even when normal touch controls are disabled.
+
+### Graphics drivers
+
+- Added Vauzi-17/710 v2.7 as a separate bundled **Adreno 710 (Vauzi)** driver choice. With Render Mode Auto it uses the author's recommended Sysmem path; the existing universal Turnip remains the default for compatibility.
+- Provision and update both bundled driver assets independently without replacing an imported selection.
+- Documented Sysmem as an opt-in diagnostic/workaround for Adreno 6xx instead of forcing it globally.
+- Documented why ExynosTools needs explicit Vulkan-layer integration before it can be treated as a fully supported built-in Samsung driver, and why PanVK requires a panfrost/panthor-capable Android kernel rather than only an APK-side Mesa build.
+
+### Reliability and build automation
+
+- Fixed swapchain recovery after a failed recreation by destroying the retired old swapchain before retrying, avoiding repeated `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR` failures on affected Android drivers.
+- Added a GitHub Actions ARM64 APK workflow with private game-file checkout, host code-generation tools, NDK/vcpkg cross-compilation, ccache, optional release signing, artifact upload and release attachment.
+- Added CI setup documentation and ignored all game-derived PPC generator outputs so they cannot be committed accidentally.
+
 ## 1.5.0 (2026-07-11)
 
 ### Experimental Mali GPU support

@@ -25,6 +25,8 @@ local.properties
 /UnleashedRecompLib/ppc/ppc_recomp.*.cpp
 /UnleashedRecompLib/ppc/ppc_func_mapping.cpp
 /UnleashedRecompLib/ppc/ppc_config.h
+/UnleashedRecompLib/ppc/ppc_context.h
+/UnleashedRecompLib/ppc/ppc_recomp_shared.h
 # Belt & suspenders:
 *.xex
 *.xexp

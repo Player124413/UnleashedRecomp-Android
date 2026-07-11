@@ -49,6 +49,8 @@ For the smoothest first run, start with the default graphics settings. The Andro
 5. Copy the `game`, `update`, `patched`, and optional `dlc` folders from your legal dump into the folder shown by the app.
 6. Close and reopen the game.
 
+No PC and your file manager cannot see `Android/data`? Put the same folders into `Android/media/com.sega.sonicunr/UnleashedRecomp/` instead — that folder is browsable by regular file managers and the app picks it up automatically. Driver packages can likewise go into `Android/media/com.sega.sonicunr/driver_import/`.
+
 Do not use `adb push` directly into `Android/data`. Files created there by the shell can receive ownership that prevents the app from reading them. Use the system Files interface exposed by the app instead.
 
 ## Controls
@@ -83,22 +85,26 @@ If a mod does not appear, check that `mod.ini` is not buried inside an extra nes
 
 ## Graphics drivers
 
-The app includes a community-built Mesa Turnip driver tuned for the Adreno devices listed above. It is selected automatically on a fresh installation.
+The app includes a community-built Mesa Turnip driver tuned for the Adreno devices listed above. It is selected automatically on a fresh installation. A separate **Adreno 710 (Vauzi)** entry bundles Vauzi-17's current 710/720/722 release for A/B testing; its Auto render mode selects Sysmem.
 
 You can choose the driver and render mode from the game's options menu. If you want to try another driver:
 
 1. Open the app's transfer folder in Android Files.
-2. Copy a compatible ARM64 driver into `driver_import` — either a plain Turnip `.so` or a whole driver-package `.zip` (AdrenoTools releases, ExynosTools).
+2. Copy a compatible ARM64 driver into `driver_import` — either a plain Turnip `.so` or a whole driver-package `.zip` (AdrenoTools releases; ExynosTools backend loading is experimental).
 3. Start the game and select the imported driver.
 
 Only import drivers from a source you trust. A bad or incompatible Vulkan driver can cause graphical corruption, freezes, or startup crashes. The built-in recovery path lets you return to the bundled driver if an imported one fails.
 
 ### Device notes
 
-- **Adreno 710 / 725:** use the bundled driver. It includes a synchronization fix for the one-frame shimmer seen on early a7xx hardware.
+- **Adreno 710:** first try **Adreno 710 (Vauzi)** with Render Mode **Auto** (Sysmem). The universal bundled driver remains available for comparison and includes a synchronization fix for early-a7xx shimmer.
+- **Adreno 6xx:** if Auto/GMEM shows corruption, hangs, or unexpectedly low performance, try Render Mode **Sysmem**. It forces `TU_DEBUG=sysmem`; it is a workaround to test, not a universal performance win.
+- **Adreno 725:** use the universal bundled driver. It includes a synchronization fix for the one-frame shimmer seen on early a7xx hardware.
 - **Adreno 732:** supported through a community device profile based on the closely related Adreno 735.
 - **Adreno 750:** disable MSAA if you see corruption. The known issue is in the Turnip MSAA path; the default Android settings already leave anti-aliasing off.
 - **Adreno 720 / 722:** driver entries are included, but real-device feedback is still needed.
+
+Technical findings and current limitations for ExynosTools and PanVK are documented in [`docs/GRAPHICS_DRIVERS.md`](docs/GRAPHICS_DRIVERS.md).
 
 ## Troubleshooting
 

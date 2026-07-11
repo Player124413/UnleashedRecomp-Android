@@ -1,0 +1,182 @@
+# Builds the Android APK from source on every tag push (v*) or manual dispatch.
+#
+# Game-derived inputs (default.xex, default.xexp, shader.ar) cannot live in this
+# public repository. They are fetched from a private repository configured via:
+#   - repository VARIABLE `GAME_FILES_REPO`  - e.g. "SansNope/UnleashedRecomp-GameFiles"
+#   - repository SECRET  `GAME_FILES_TOKEN`  - fine-grained PAT with read-only
+#     Contents access to that single repository
+# The private repository must contain default.xex, default.xexp and shader.ar
+# at its root. See docs/ci.md for details.
+#
+# Optional release signing (falls back to a debug build when unset):
+#   - secret `ANDROID_KEYSTORE_BASE64`   - keystore file, base64-encoded
+#   - secret `ANDROID_KEYSTORE_PASSWORD`
+#   - secret `ANDROID_KEY_ALIAS`
+#   - secret `ANDROID_KEY_PASSWORD`
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "29.0.14206865"
+  # Must match "builtin-baseline" in vcpkg.json.
+  VCPKG_COMMIT: b322364f06308bdd24823f9d8f03fe0cc86fd46f
+
+jobs:
+  build:
+    name: Build APK (arm64-v8a)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Check out game files (private repo)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GAME_FILES_REPO }}
+          token: ${{ secrets.GAME_FILES_TOKEN }}
+          path: game-files
+
+      - name: Stage game files
+        run: |
+          install -m 644 game-files/default.xex game-files/default.xexp game-files/shader.ar UnleashedRecompLib/private/
+          rm -rf game-files
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android NDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+
+      - name: Set up vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg thirdparty/vcpkg
+          git -C thirdparty/vcpkg checkout "$VCPKG_COMMIT"
+          thirdparty/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Cache vcpkg binary archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: android-arm64
+          max-size: 3G
+
+      # Code-generation tools must run on the build host, so they are built in a
+      # separate native pass and handed to the cross build as prebuilt binaries
+      # (mirrors build_host_tools.bat + build_android_configure.bat on Windows).
+      - name: Build host tools
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/thirdparty/vcpkg
+        run: |
+          cmake -S . -B out/build/host-tools -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUNLEASHED_RECOMP_HOST_TOOLS_ONLY=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build out/build/host-tools --target XenonRecomp XenosRecomp file_to_c x_decompress
+          for tool in XenonRecomp XenosRecomp file_to_c x_decompress; do
+            path=$(find out/build/host-tools -type f -name "$tool" | head -n 1)
+            if [ -z "$path" ]; then
+              echo "::error::Host tool $tool was not produced"
+              exit 1
+            fi
+            var=$(echo "$tool" | tr '[:lower:]' '[:upper:]' | tr -d '_')
+            echo "HOST_$var=$GITHUB_WORKSPACE/$path" >> "$GITHUB_ENV"
+          done
+
+      - name: Configure Android build
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/thirdparty/vcpkg
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          cmake -S . -B out/build/android-arm64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=thirdparty/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=arm64-android \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_SYSTEM_VERSION=29 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUNLEASHED_RECOMP_ANDROID=ON \
+            -DUNLEASHED_RECOMP_D3D12=OFF \
+            -DUNLEASHED_RECOMP_HOST_XENON_RECOMP="$HOST_XENONRECOMP" \
+            -DUNLEASHED_RECOMP_HOST_XENOS_RECOMP="$HOST_XENOSRECOMP" \
+            -DUNLEASHED_RECOMP_HOST_FILE_TO_C="$HOST_FILETOC" \
+            -DUNLEASHED_RECOMP_HOST_X_DECOMPRESS="$HOST_XDECOMPRESS" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build native libraries
+        run: |
+          cmake --build out/build/android-arm64 \
+            --target UnleashedRecomp main_hook file_redirect_hook gsl_alloc_hook hook_impl
+
+      - name: Stage jniLibs
+        run: |
+          dest=android-apk/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$dest"
+          cp out/build/android-arm64/UnleashedRecomp/libmain.so "$dest/"
+          for lib in libmain_hook.so libfile_redirect_hook.so libgsl_alloc_hook.so libhook_impl.so; do
+            path=$(find out/build/android-arm64 -name "$lib" | head -n 1)
+            if [ -z "$path" ]; then
+              echo "::error::adrenotools hook library $lib was not produced"
+              exit 1
+            fi
+            cp "$path" "$dest/"
+          done
+          ls -la "$dest"
+
+      - name: Build APK
+        working-directory: android-apk
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+            export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/keystore.jks"
+            ./gradlew --no-daemon assembleRelease
+          else
+            ./gradlew --no-daemon assembleDebug
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnleashedRecomp-Android-${{ github.ref_name }}
+          path: android-apk/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+      - name: Attach APK to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find android-apk/app/build/outputs/apk -name '*.apk' -print0 |
+            xargs -0 gh release upload "$GITHUB_REF_NAME" --clobber || \
+            echo "No release for $GITHUB_REF_NAME yet; APK stays available as a workflow artifact."

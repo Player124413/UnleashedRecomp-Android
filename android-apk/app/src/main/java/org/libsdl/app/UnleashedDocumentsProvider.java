@@ -211,17 +211,8 @@ public final class UnleashedDocumentsProvider extends DocumentsProvider {
     }
 
     private List<RootInfo> getRoots() {
-        File internalGame = new File(requireContext().getFilesDir(), "UnleashedRecomp");
         File externalFiles = requireContext().getExternalFilesDir(null);
-        File externalGame = externalFiles != null
-            ? new File(externalFiles, "UnleashedRecomp")
-            : internalGame;
-
-        // Match native GetDataRoot(): keep migrated/legacy internal installs active when
-        // they contain game/, otherwise use app-specific external storage.
-        File activeGame = new File(internalGame, "game").isDirectory()
-            ? internalGame
-            : externalGame;
+        File activeGame = AppStorage.activeGameRoot(requireContext());
 
         List<RootInfo> roots = new ArrayList<>();
         roots.add(new RootInfo(
