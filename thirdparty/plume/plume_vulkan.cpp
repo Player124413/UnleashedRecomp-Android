@@ -276,6 +276,18 @@ namespace plume {
             return VK_FORMAT_BC7_UNORM_BLOCK;
         case RenderFormat::BC7_UNORM_SRGB:
             return VK_FORMAT_BC7_SRGB_BLOCK;
+        case RenderFormat::ETC2_RGB8_UNORM:
+            return VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+        case RenderFormat::ETC2_RGB8_UNORM_SRGB:
+            return VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK;
+        case RenderFormat::ETC2_RGBA8_UNORM:
+            return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+        case RenderFormat::ETC2_RGBA8_UNORM_SRGB:
+            return VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK;
+        case RenderFormat::EAC_R11_UNORM:
+            return VK_FORMAT_EAC_R11_UNORM_BLOCK;
+        case RenderFormat::EAC_R11G11_UNORM:
+            return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
         default:
             assert(false && "Unknown format.");
             return VK_FORMAT_UNDEFINED;
@@ -4030,6 +4042,16 @@ namespace plume {
         const bool descriptorIndexing = coreVulkan12
             ? (vulkan12Features.descriptorBindingPartiallyBound && vulkan12Features.descriptorBindingVariableDescriptorCount && vulkan12Features.runtimeDescriptorArray)
             : (indexingFeatures.descriptorBindingPartiallyBound && indexingFeatures.descriptorBindingVariableDescriptorCount && indexingFeatures.runtimeDescriptorArray);
+
+        VkPhysicalDeviceDescriptorIndexingProperties indexingProperties = {};
+        if (descriptorIndexing) {
+            indexingProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+
+            VkPhysicalDeviceProperties2 deviceProperties2 = {};
+            deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            deviceProperties2.pNext = &indexingProperties;
+            vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
+        }
         const bool scalarBlockLayout = coreVulkan12 ? bool(vulkan12Features.scalarBlockLayout) : bool(layoutFeatures.scalarBlockLayout);
         const bool samplerMirrorClampToEdge =
             (coreVulkan12 && vulkan12Features.samplerMirrorClampToEdge) ||
@@ -4260,6 +4282,16 @@ namespace plume {
         capabilities.descriptorIndexing = descriptorIndexing;
         capabilities.scalarBlockLayout = scalarBlockLayout;
         capabilities.textureCompressionBC = deviceFeatures.features.textureCompressionBC;
+        capabilities.textureCompressionETC2 = deviceFeatures.features.textureCompressionETC2;
+
+        if (descriptorIndexing) {
+            capabilities.maxSampledImageDescriptors = std::min(indexingProperties.maxDescriptorSetUpdateAfterBindSampledImages, indexingProperties.maxPerStageDescriptorUpdateAfterBindSampledImages);
+            capabilities.maxSamplerDescriptors = std::min(indexingProperties.maxDescriptorSetUpdateAfterBindSamplers, indexingProperties.maxPerStageDescriptorUpdateAfterBindSamplers);
+        }
+        else {
+            capabilities.maxSampledImageDescriptors = std::min(physicalDeviceProperties.limits.maxDescriptorSetSampledImages, physicalDeviceProperties.limits.maxPerStageDescriptorSampledImages);
+            capabilities.maxSamplerDescriptors = std::min(physicalDeviceProperties.limits.maxDescriptorSetSamplers, physicalDeviceProperties.limits.maxPerStageDescriptorSamplers);
+        }
         capabilities.bufferDeviceAddress = bufferDeviceAddress;
         capabilities.presentWait = presentWait;
         capabilities.displayTiming = supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end();

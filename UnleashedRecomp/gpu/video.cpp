@@ -6,6 +6,7 @@
 
 #define BCDEC_IMPLEMENTATION
 #include <bcdec.h>
+#include <ProcessRGB.hpp>
 
 #include <app.h>
 #include <bc_diff.h>
@@ -40,6 +41,7 @@
 #include <os/process.h>
 #include <os/logger.h>
 #if defined(__ANDROID__)
+#include <os/android/storage_android.h>
 #include <os/android/vulkan_driver_android.h>
 #endif
 
@@ -1366,6 +1368,11 @@ static bool DetectWine()
 static constexpr size_t TEXTURE_DESCRIPTOR_SIZE = 65536;
 static constexpr size_t SAMPLER_DESCRIPTOR_SIZE = 1024;
 
+// Clamped to the device's descriptor set limits after device creation. Desktop GPUs and
+// recent Mali report far more than the defaults; PowerVR is the family that can go lower.
+static uint32_t g_textureDescriptorSize = TEXTURE_DESCRIPTOR_SIZE;
+static uint32_t g_samplerDescriptorSize = SAMPLER_DESCRIPTOR_SIZE;
+
 static std::unique_ptr<GuestTexture> g_imFontTexture;
 static std::unique_ptr<RenderPipelineLayout> g_imPipelineLayout;
 static std::unique_ptr<RenderPipeline> g_imPipeline;
@@ -1508,13 +1515,13 @@ static void CreateImGuiBackend()
 
     RenderDescriptorSetBuilder descriptorSetBuilder;
     descriptorSetBuilder.begin();
-    descriptorSetBuilder.addTexture(0, TEXTURE_DESCRIPTOR_SIZE);
-    descriptorSetBuilder.end(true, TEXTURE_DESCRIPTOR_SIZE);
+    descriptorSetBuilder.addTexture(0, g_textureDescriptorSize);
+    descriptorSetBuilder.end(true, g_textureDescriptorSize);
     pipelineLayoutBuilder.addDescriptorSet(descriptorSetBuilder);
 
     descriptorSetBuilder.begin();
-    descriptorSetBuilder.addSampler(0, SAMPLER_DESCRIPTOR_SIZE);
-    descriptorSetBuilder.end(true, SAMPLER_DESCRIPTOR_SIZE);
+    descriptorSetBuilder.addSampler(0, g_samplerDescriptorSize);
+    descriptorSetBuilder.end(true, g_samplerDescriptorSize);
     pipelineLayoutBuilder.addDescriptorSet(descriptorSetBuilder);
 
     pipelineLayoutBuilder.addPushConstant(0, 2, sizeof(ImGuiPushConstants), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
@@ -1916,8 +1923,42 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
     g_capabilities = g_device->getCapabilities();
 
+#if defined(__ANDROID__)
+    // Testing hook: a force_no_bc.txt in the external driver_import folder (reachable over
+    // MTP/file managers) or in the internal files dir (reachable via adb run-as, since
+    // shell-created files under Android/data are not readable by the app on some devices)
+    // exercises the BC fallback paths on hardware that natively supports BC (e.g. Adreno).
+    {
+        std::error_code forceNoBcEc;
+        if (g_capabilities.textureCompressionBC &&
+            (std::filesystem::exists(os::android::GetExternalFilesDir() / "driver_import" / "force_no_bc.txt", forceNoBcEc) ||
+             std::filesystem::exists(os::android::GetInternalFilesDir() / "force_no_bc.txt", forceNoBcEc)))
+        {
+            g_capabilities.textureCompressionBC = false;
+            LOG_WARNING("force_no_bc.txt present: BC texture support disabled to test the fallback paths.");
+        }
+    }
+#endif
+
     if (!g_capabilities.textureCompressionBC)
-        LOG_WARNING("BC texture formats are unsupported by this device. Textures will be decompressed on the CPU at load time, increasing memory usage.");
+    {
+        if (g_capabilities.textureCompressionETC2)
+            LOG_WARNING("BC texture formats are unsupported by this device. Textures will be transcoded to ETC2/EAC on the CPU at load time.");
+        else
+            LOG_WARNING("BC texture formats are unsupported by this device. Textures will be decompressed on the CPU at load time, increasing memory usage.");
+    }
+
+    if (g_capabilities.maxSampledImageDescriptors != 0)
+        g_textureDescriptorSize = uint32_t(std::min<size_t>(TEXTURE_DESCRIPTOR_SIZE, g_capabilities.maxSampledImageDescriptors));
+
+    if (g_capabilities.maxSamplerDescriptors != 0)
+        g_samplerDescriptorSize = uint32_t(std::min<size_t>(SAMPLER_DESCRIPTOR_SIZE, g_capabilities.maxSamplerDescriptors));
+
+    if (g_textureDescriptorSize < TEXTURE_DESCRIPTOR_SIZE || g_samplerDescriptorSize < SAMPLER_DESCRIPTOR_SIZE)
+    {
+        LOGF_WARNING("Descriptor set sizes clamped to device limits: {} textures, {} samplers.",
+            g_textureDescriptorSize, g_samplerDescriptorSize);
+    }
 
     LoadEmbeddedResources();
 
@@ -2011,8 +2052,8 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     
     RenderDescriptorSetBuilder descriptorSetBuilder;
     descriptorSetBuilder.begin();
-    descriptorSetBuilder.addTexture(0, TEXTURE_DESCRIPTOR_SIZE);
-    descriptorSetBuilder.end(true, TEXTURE_DESCRIPTOR_SIZE);
+    descriptorSetBuilder.addTexture(0, g_textureDescriptorSize);
+    descriptorSetBuilder.end(true, g_textureDescriptorSize);
     
     g_textureDescriptorSet = descriptorSetBuilder.create(g_device.get());
     
@@ -2070,8 +2111,8 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     pipelineLayoutBuilder.addDescriptorSet(descriptorSetBuilder);
     
     descriptorSetBuilder.begin();
-    descriptorSetBuilder.addSampler(0, SAMPLER_DESCRIPTOR_SIZE);
-    descriptorSetBuilder.end(true, SAMPLER_DESCRIPTOR_SIZE);
+    descriptorSetBuilder.addSampler(0, g_samplerDescriptorSize);
+    descriptorSetBuilder.end(true, g_samplerDescriptorSize);
     
     g_samplerDescriptorSet = descriptorSetBuilder.create(g_device.get());
     auto& [descriptorIndex, sampler] = g_samplerStates[XXH3_64bits(&g_samplerDescs[0], sizeof(RenderSamplerDesc))];
@@ -2586,7 +2627,8 @@ static void DrawProfiler()
 
         ImGui::Text("Present Wait: %s", g_capabilities.presentWait ? "Supported" : "Unsupported");
         ImGui::Text("Triangle Fan: %s", g_capabilities.triangleFan ? "Supported" : "Unsupported");
-        ImGui::Text("BC Textures: %s", g_capabilities.textureCompressionBC ? "Supported" : "CPU Decode");
+        ImGui::Text("BC Textures: %s", g_capabilities.textureCompressionBC
+            ? "Supported" : (g_capabilities.textureCompressionETC2 ? "ETC2 Transcode" : "CPU Decode"));
         ImGui::Text("Dynamic Depth Bias: %s", g_capabilities.dynamicDepthBias ? "Supported" : "Unsupported");
         ImGui::Text("Triangle Strip Workaround: %s", g_triangleStripWorkaround ? "Enabled" : "Disabled");
         ImGui::Text("Hardware Resolve: %s", g_hardwareResolve ? "Enabled" : "Disabled");
@@ -5782,38 +5824,133 @@ static RenderFormat ConvertDXGIFormat(ddspp::DXGIFormat format)
     }
 }
 
-// CPU fallback for devices without BC sampled-image support (stock Mali/PowerVR drivers).
-// Decoded textures cost 4-8x the memory of the BC originals; an on-device transcode cache
-// to ETC2/EAC is the intended long-term replacement.
-struct BCnDecodeInfo
+// CPU fallbacks for devices without BC sampled-image support (stock Mali/PowerVR drivers).
+// Preferred path: transcode to ETC2/EAC with etcpak - the memory footprint matches BC
+// (except transparent BC1, which doubles). When ETC2 is unavailable too, decode to plain
+// RGBA8/R8/RG8 at 4-8x the BC footprint.
+enum class BCnFallbackMode
 {
-    RenderFormat decodedFormat;
-    uint32_t bytesPerPixel;
-    uint32_t blockSize;
-    void (*decodeBlock)(const void* compressedBlock, void* decompressedBlock, int destinationPitch);
+    None,
+    Decode,
+    Transcode,
 };
 
-static bool GetBCnDecodeInfo(RenderFormat format, BCnDecodeInfo& info)
+struct BCnFallback
 {
-    // There is no R8G8B8A8_UNORM_SRGB in RenderFormat, so sRGB variants decode to plain
-    // UNORM and lose the automatic sRGB-to-linear conversion on sampling. The base game
-    // only ships legacy DX9-style DDS (non-sRGB); this can only affect DX10-header mods.
-    static bool s_warnedSrgb;
+    BCnFallbackMode mode = BCnFallbackMode::None;
+    RenderFormat targetFormat{};
+    uint32_t sourceBlockSize = 0;
+    uint32_t bytesPerPixel = 0;   // Decode: decoded pixel size.
+    uint32_t targetBlockSize = 0; // Transcode: ETC2/EAC bytes per 4x4 block.
+    void (*decodeBlock)(const void* compressedBlock, void* decompressedBlock, int destinationPitch) = nullptr;
+    void (*encodeBlockRow)(const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width) = nullptr;
+};
+
+// etcpak consumes pixels as b,g,r,a in memory while bcdec emits r,g,b,a: swap R and B
+// while decoding into the intermediate buffer.
+template<void (*TDecoder)(const void*, void*, int)>
+static void DecodeBlockSwapRB(const void* src, void* dst, int pitch)
+{
+    uint8_t block[4][16];
+    TDecoder(src, block, 16);
+
+    for (size_t y = 0; y < 4; y++)
+    {
+        uint8_t* row = reinterpret_cast<uint8_t*>(dst) + y * pitch;
+        for (size_t x = 0; x < 4; x++)
+        {
+            row[x * 4 + 0] = block[y][x * 4 + 2];
+            row[x * 4 + 1] = block[y][x * 4 + 1];
+            row[x * 4 + 2] = block[y][x * 4 + 0];
+            row[x * 4 + 3] = block[y][x * 4 + 3];
+        }
+    }
+}
+
+static void DecodeBC4BlockForEac(const void* src, void* dst, int pitch)
+{
+    uint8_t block[4][4];
+    bcdec_bc4(src, block, 4);
+
+    for (size_t y = 0; y < 4; y++)
+    {
+        uint8_t* row = reinterpret_cast<uint8_t*>(dst) + y * pitch;
+        for (size_t x = 0; x < 4; x++)
+        {
+            row[x * 4 + 0] = 0;
+            row[x * 4 + 1] = 0;
+            row[x * 4 + 2] = block[y][x]; // etcpak's EAC R channel lives in byte 2.
+            row[x * 4 + 3] = 0xFF;
+        }
+    }
+}
+
+static void DecodeBC5BlockForEac(const void* src, void* dst, int pitch)
+{
+    uint8_t block[4][8];
+    bcdec_bc5(src, block, 8);
+
+    for (size_t y = 0; y < 4; y++)
+    {
+        uint8_t* row = reinterpret_cast<uint8_t*>(dst) + y * pitch;
+        for (size_t x = 0; x < 4; x++)
+        {
+            row[x * 4 + 0] = 0;
+            row[x * 4 + 1] = block[y][x * 2 + 1];
+            row[x * 4 + 2] = block[y][x * 2 + 0];
+            row[x * 4 + 3] = 0xFF;
+        }
+    }
+}
+
+// DXT1 stores punch-through alpha in blocks where color0 <= color1 and an index equals 3.
+// Scanning the raw blocks decides between ETC2 RGB (opaque, same size as BC1) and ETC2
+// RGBA (transparent, double size) without a full decode pass.
+static bool BC1HasTransparency(const uint8_t* blocks, size_t blockCount)
+{
+    for (size_t i = 0; i < blockCount; i++, blocks += 8)
+    {
+        const uint16_t c0 = blocks[0] | (blocks[1] << 8);
+        const uint16_t c1 = blocks[2] | (blocks[3] << 8);
+        if (c0 > c1)
+            continue;
+
+        const uint32_t indices = blocks[4] | (blocks[5] << 8) | (blocks[6] << 16) | (uint32_t(blocks[7]) << 24);
+        for (uint32_t j = 0; j < 16; j++)
+        {
+            if (((indices >> (j * 2)) & 0x3) == 0x3)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+static bool GetBCnFallback(RenderFormat format, const uint8_t* data, size_t dataSize, uint32_t headerSize, BCnFallback& fallback)
+{
+    const bool etc2 = g_capabilities.textureCompressionETC2;
+
     switch (format)
     {
+    case RenderFormat::BC4_SNORM:
+    case RenderFormat::BC5_SNORM:
+        LOG_WARNING("Converting SNORM BC texture as UNORM; values will be biased.");
+        break;
     case RenderFormat::BC1_UNORM_SRGB:
     case RenderFormat::BC2_UNORM_SRGB:
     case RenderFormat::BC3_UNORM_SRGB:
     case RenderFormat::BC7_UNORM_SRGB:
-        if (!s_warnedSrgb)
+        // The transcode targets have proper sRGB variants; only the plain decode loses the
+        // automatic sRGB-to-linear conversion (RenderFormat has no R8G8B8A8_UNORM_SRGB).
+        if (!etc2)
         {
-            s_warnedSrgb = true;
-            LOG_WARNING("Decoding sRGB BC texture to UNORM: sampling will return sRGB-encoded values.");
+            static bool s_warnedSrgb;
+            if (!s_warnedSrgb)
+            {
+                s_warnedSrgb = true;
+                LOG_WARNING("Decoding sRGB BC texture to UNORM: sampling will return sRGB-encoded values.");
+            }
         }
-        break;
-    case RenderFormat::BC4_SNORM:
-    case RenderFormat::BC5_SNORM:
-        LOG_WARNING("Decoding SNORM BC texture as UNORM; values will be biased.");
         break;
     default:
         break;
@@ -5824,35 +5961,108 @@ static bool GetBCnDecodeInfo(RenderFormat format, BCnDecodeInfo& info)
     case RenderFormat::BC1_TYPELESS:
     case RenderFormat::BC1_UNORM:
     case RenderFormat::BC1_UNORM_SRGB:
-        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC1_BLOCK_SIZE, &bcdec_bc1 };
+    {
+        const bool srgb = format == RenderFormat::BC1_UNORM_SRGB;
+        fallback.sourceBlockSize = BCDEC_BC1_BLOCK_SIZE;
+        if (etc2)
+        {
+            fallback.mode = BCnFallbackMode::Transcode;
+            fallback.decodeBlock = &DecodeBlockSwapRB<&bcdec_bc1>;
+            if (BC1HasTransparency(data + headerSize, (dataSize - headerSize) / BCDEC_BC1_BLOCK_SIZE))
+            {
+                fallback.targetFormat = srgb ? RenderFormat::ETC2_RGBA8_UNORM_SRGB : RenderFormat::ETC2_RGBA8_UNORM;
+                fallback.targetBlockSize = 16;
+                fallback.encodeBlockRow = [](const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width) { CompressEtc2Rgba(src, dst, blocks, width, true); };
+            }
+            else
+            {
+                fallback.targetFormat = srgb ? RenderFormat::ETC2_RGB8_UNORM_SRGB : RenderFormat::ETC2_RGB8_UNORM;
+                fallback.targetBlockSize = 8;
+                fallback.encodeBlockRow = [](const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width) { CompressEtc2Rgb(src, dst, blocks, width, true); };
+            }
+        }
+        else
+        {
+            fallback.mode = BCnFallbackMode::Decode;
+            fallback.targetFormat = RenderFormat::R8G8B8A8_UNORM;
+            fallback.bytesPerPixel = 4;
+            fallback.decodeBlock = &bcdec_bc1;
+        }
         return true;
+    }
     case RenderFormat::BC2_TYPELESS:
     case RenderFormat::BC2_UNORM:
     case RenderFormat::BC2_UNORM_SRGB:
-        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC2_BLOCK_SIZE, &bcdec_bc2 };
-        return true;
     case RenderFormat::BC3_TYPELESS:
     case RenderFormat::BC3_UNORM:
     case RenderFormat::BC3_UNORM_SRGB:
-        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC3_BLOCK_SIZE, &bcdec_bc3 };
+    case RenderFormat::BC7_TYPELESS:
+    case RenderFormat::BC7_UNORM:
+    case RenderFormat::BC7_UNORM_SRGB:
+    {
+        const bool srgb = format == RenderFormat::BC2_UNORM_SRGB || format == RenderFormat::BC3_UNORM_SRGB || format == RenderFormat::BC7_UNORM_SRGB;
+        const bool bc2 = format == RenderFormat::BC2_TYPELESS || format == RenderFormat::BC2_UNORM || format == RenderFormat::BC2_UNORM_SRGB;
+        const bool bc3 = format == RenderFormat::BC3_TYPELESS || format == RenderFormat::BC3_UNORM || format == RenderFormat::BC3_UNORM_SRGB;
+        fallback.sourceBlockSize = BCDEC_BC3_BLOCK_SIZE;
+        if (etc2)
+        {
+            fallback.mode = BCnFallbackMode::Transcode;
+            fallback.targetFormat = srgb ? RenderFormat::ETC2_RGBA8_UNORM_SRGB : RenderFormat::ETC2_RGBA8_UNORM;
+            fallback.targetBlockSize = 16;
+            fallback.decodeBlock = bc2 ? &DecodeBlockSwapRB<&bcdec_bc2> : (bc3 ? &DecodeBlockSwapRB<&bcdec_bc3> : &DecodeBlockSwapRB<&bcdec_bc7>);
+            fallback.encodeBlockRow = [](const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width) { CompressEtc2Rgba(src, dst, blocks, width, true); };
+        }
+        else
+        {
+            fallback.mode = BCnFallbackMode::Decode;
+            fallback.targetFormat = RenderFormat::R8G8B8A8_UNORM;
+            fallback.bytesPerPixel = 4;
+            fallback.decodeBlock = bc2 ? &bcdec_bc2 : (bc3 ? &bcdec_bc3 : &bcdec_bc7);
+        }
         return true;
+    }
     case RenderFormat::BC4_TYPELESS:
     case RenderFormat::BC4_UNORM:
     case RenderFormat::BC4_SNORM:
-        info = { RenderFormat::R8_UNORM, 1, BCDEC_BC4_BLOCK_SIZE, &bcdec_bc4 };
+        fallback.sourceBlockSize = BCDEC_BC4_BLOCK_SIZE;
+        if (etc2)
+        {
+            fallback.mode = BCnFallbackMode::Transcode;
+            fallback.targetFormat = RenderFormat::EAC_R11_UNORM;
+            fallback.targetBlockSize = 8;
+            fallback.decodeBlock = &DecodeBC4BlockForEac;
+            fallback.encodeBlockRow = &CompressEacR;
+        }
+        else
+        {
+            fallback.mode = BCnFallbackMode::Decode;
+            fallback.targetFormat = RenderFormat::R8_UNORM;
+            fallback.bytesPerPixel = 1;
+            fallback.decodeBlock = &bcdec_bc4;
+        }
         return true;
     case RenderFormat::BC5_TYPELESS:
     case RenderFormat::BC5_UNORM:
     case RenderFormat::BC5_SNORM:
-        info = { RenderFormat::R8G8_UNORM, 2, BCDEC_BC5_BLOCK_SIZE, &bcdec_bc5 };
-        return true;
-    case RenderFormat::BC7_TYPELESS:
-    case RenderFormat::BC7_UNORM:
-    case RenderFormat::BC7_UNORM_SRGB:
-        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC7_BLOCK_SIZE, &bcdec_bc7 };
+        fallback.sourceBlockSize = BCDEC_BC5_BLOCK_SIZE;
+        if (etc2)
+        {
+            fallback.mode = BCnFallbackMode::Transcode;
+            fallback.targetFormat = RenderFormat::EAC_R11G11_UNORM;
+            fallback.targetBlockSize = 16;
+            fallback.decodeBlock = &DecodeBC5BlockForEac;
+            fallback.encodeBlockRow = &CompressEacRg;
+        }
+        else
+        {
+            fallback.mode = BCnFallbackMode::Decode;
+            fallback.targetFormat = RenderFormat::R8G8_UNORM;
+            fallback.bytesPerPixel = 2;
+            fallback.decodeBlock = &bcdec_bc5;
+        }
         return true;
     default:
-        // BC6H stays unsupported: bcdec only emits 3-channel RGB floats for it and no
+        // BC6H stays unsupported: bcdec only emits 3-channel float output for it and no
         // known game or mod content uses it.
         return false;
     }
@@ -5876,17 +6086,16 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
         desc.format = ConvertDXGIFormat(ddsDesc.format);
         desc.flags = ddsDesc.type == ddspp::TextureType::Cubemap ? RenderTextureFlag::CUBE : RenderTextureFlag::NONE;
 
-        BCnDecodeInfo bcDecode{};
-        const bool decodeBC = !g_capabilities.textureCompressionBC && ddsDesc.blockWidth > 1;
-        if (decodeBC)
+        BCnFallback bcFallback{};
+        if (!g_capabilities.textureCompressionBC && ddsDesc.blockWidth > 1)
         {
-            if (!GetBCnDecodeInfo(desc.format, bcDecode))
+            if (!GetBCnFallback(desc.format, data, dataSize, ddsDesc.headerSize, bcFallback))
             {
                 LOGF_ERROR("Cannot load a BC-compressed texture (RenderFormat {}) on a device without BC texture support.", uint32_t(desc.format));
                 return false;
             }
 
-            desc.format = bcDecode.decodedFormat;
+            desc.format = bcFallback.targetFormat;
         }
 
         if (forceCubeMap)
@@ -5948,11 +6157,17 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
                 slice.srcRowPitch = (rowPitch + 7) / 8;
                 slice.rowCount = (slice.height + ddsDesc.blockHeight - 1) / ddsDesc.blockHeight;
 
-                if (decodeBC)
+                if (bcFallback.mode == BCnFallbackMode::Decode)
                 {
                     // The upload buffer holds decoded pixels instead of the source BC blocks.
-                    slice.dstRowPitch = (slice.width * bcDecode.bytesPerPixel + PITCH_ALIGNMENT - 1) & ~(PITCH_ALIGNMENT - 1);
+                    slice.dstRowPitch = (slice.width * bcFallback.bytesPerPixel + PITCH_ALIGNMENT - 1) & ~(PITCH_ALIGNMENT - 1);
                     slice.dstRowCount = slice.height;
+                }
+                else if (bcFallback.mode == BCnFallbackMode::Transcode)
+                {
+                    // The upload buffer holds ETC2/EAC blocks with the same 4x4 geometry.
+                    slice.dstRowPitch = (((slice.width + 3) / 4) * bcFallback.targetBlockSize + PITCH_ALIGNMENT - 1) & ~(PITCH_ALIGNMENT - 1);
+                    slice.dstRowCount = slice.rowCount;
                 }
                 else
                 {
@@ -5974,14 +6189,16 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
             const uint8_t* srcData = data + ddsDesc.headerSize + slice.srcOffset;
             uint8_t* dstData = mappedMemory + slice.dstOffset;
 
-            if (decodeBC)
+            if (bcFallback.mode != BCnFallbackMode::None)
             {
-                // Decode into a buffer rounded up to whole 4x4 blocks, then copy the exact
-                // pixel rows: edge blocks always write a full 4x4 pixel area, which could
-                // otherwise run past this slice's region in the upload buffer.
+                // Decode into a buffer rounded up to whole 4x4 blocks first: edge blocks
+                // always write a full 4x4 pixel area, which could otherwise run past this
+                // slice's region in the upload buffer. Transcode always decodes to 4-byte
+                // pixels since the encoders consume 32-bit pixels.
                 const uint32_t blocksX = (slice.width + 3) / 4;
                 const uint32_t blocksY = slice.rowCount;
-                const uint32_t tmpPitch = blocksX * 4 * bcDecode.bytesPerPixel;
+                const uint32_t pixelSize = bcFallback.mode == BCnFallbackMode::Decode ? bcFallback.bytesPerPixel : 4;
+                const uint32_t tmpPitch = blocksX * 4 * pixelSize;
                 decodeTemp.resize(size_t(tmpPitch) * blocksY * 4);
 
                 for (uint32_t z = 0; z < slice.depth; z++)
@@ -5992,16 +6209,30 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
                     {
                         for (uint32_t blockX = 0; blockX < blocksX; blockX++)
                         {
-                            bcDecode.decodeBlock(
-                                srcSlice + size_t(blockY) * slice.srcRowPitch + size_t(blockX) * bcDecode.blockSize,
-                                decodeTemp.data() + size_t(blockY) * 4 * tmpPitch + size_t(blockX) * 4 * bcDecode.bytesPerPixel,
+                            bcFallback.decodeBlock(
+                                srcSlice + size_t(blockY) * slice.srcRowPitch + size_t(blockX) * bcFallback.sourceBlockSize,
+                                decodeTemp.data() + size_t(blockY) * 4 * tmpPitch + size_t(blockX) * 4 * pixelSize,
                                 int(tmpPitch));
                         }
                     }
 
-                    uint8_t* dstSlice = dstData + size_t(z) * slice.dstRowPitch * slice.height;
-                    for (uint32_t row = 0; row < slice.height; row++)
-                        memcpy(dstSlice + size_t(row) * slice.dstRowPitch, decodeTemp.data() + size_t(row) * tmpPitch, size_t(slice.width) * bcDecode.bytesPerPixel);
+                    if (bcFallback.mode == BCnFallbackMode::Decode)
+                    {
+                        uint8_t* dstSlice = dstData + size_t(z) * slice.dstRowPitch * slice.height;
+                        for (uint32_t row = 0; row < slice.height; row++)
+                            memcpy(dstSlice + size_t(row) * slice.dstRowPitch, decodeTemp.data() + size_t(row) * tmpPitch, size_t(slice.width) * pixelSize);
+                    }
+                    else
+                    {
+                        uint8_t* dstSlice = dstData + size_t(z) * slice.dstRowPitch * blocksY;
+                        for (uint32_t blockY = 0; blockY < blocksY; blockY++)
+                        {
+                            bcFallback.encodeBlockRow(
+                                reinterpret_cast<const uint32_t*>(decodeTemp.data() + size_t(blockY) * 4 * tmpPitch),
+                                reinterpret_cast<uint64_t*>(dstSlice + size_t(blockY) * slice.dstRowPitch),
+                                blocksX, size_t(blocksX) * 4);
+                        }
+                    }
                 }
             }
             else if (slice.srcRowPitch == slice.dstRowPitch)
@@ -6027,9 +6258,13 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
 
                 auto copyTextureRegion = [&](Slice& slice, uint32_t subresourceIndex)
                     {
-                        uint32_t footprintRowWidth = decodeBC
-                            ? slice.dstRowPitch / bcDecode.bytesPerPixel
-                            : (slice.dstRowPitch * 8) / ddsDesc.bitsPerPixelOrBlock * ddsDesc.blockWidth;
+                        uint32_t footprintRowWidth;
+                        if (bcFallback.mode == BCnFallbackMode::Decode)
+                            footprintRowWidth = slice.dstRowPitch / bcFallback.bytesPerPixel;
+                        else if (bcFallback.mode == BCnFallbackMode::Transcode)
+                            footprintRowWidth = slice.dstRowPitch / bcFallback.targetBlockSize * 4;
+                        else
+                            footprintRowWidth = (slice.dstRowPitch * 8) / ddsDesc.bitsPerPixelOrBlock * ddsDesc.blockWidth;
 
                         g_copyCommandList->copyTextureRegion(
                             RenderTextureCopyLocation::Subresource(texture.texture, subresourceIndex % ddsDesc.numMips, subresourceIndex / ddsDesc.numMips),

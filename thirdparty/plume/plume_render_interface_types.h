@@ -160,6 +160,14 @@ namespace plume {
         BC7_TYPELESS,
         BC7_UNORM,
         BC7_UNORM_SRGB,
+        // Appended after the initial release: enum values may be serialized in pipeline
+        // caches, so new formats must only ever be added right before MAX.
+        ETC2_RGB8_UNORM,
+        ETC2_RGB8_UNORM_SRGB,
+        ETC2_RGBA8_UNORM,
+        ETC2_RGBA8_UNORM_SRGB,
+        EAC_R11_UNORM,
+        EAC_R11G11_UNORM,
         MAX
     };
 
@@ -586,6 +594,9 @@ namespace plume {
         case RenderFormat::BC4_UNORM:
         case RenderFormat::BC4_SNORM:
         case RenderFormat::BC4_TYPELESS:
+        case RenderFormat::ETC2_RGB8_UNORM:
+        case RenderFormat::ETC2_RGB8_UNORM_SRGB:
+        case RenderFormat::EAC_R11_UNORM:
             return 8;
         case RenderFormat::BC2_UNORM:
         case RenderFormat::BC2_UNORM_SRGB:
@@ -599,6 +610,9 @@ namespace plume {
         case RenderFormat::BC6H_SF16:
         case RenderFormat::BC7_UNORM:
         case RenderFormat::BC7_UNORM_SRGB:
+        case RenderFormat::ETC2_RGBA8_UNORM:
+        case RenderFormat::ETC2_RGBA8_UNORM_SRGB:
+        case RenderFormat::EAC_R11G11_UNORM:
             return 16;
         default:
             assert(false && "Unknown format.");
@@ -683,6 +697,12 @@ namespace plume {
         case RenderFormat::BC7_TYPELESS:
         case RenderFormat::BC7_UNORM:
         case RenderFormat::BC7_UNORM_SRGB:
+        case RenderFormat::ETC2_RGB8_UNORM:
+        case RenderFormat::ETC2_RGB8_UNORM_SRGB:
+        case RenderFormat::ETC2_RGBA8_UNORM:
+        case RenderFormat::ETC2_RGBA8_UNORM_SRGB:
+        case RenderFormat::EAC_R11_UNORM:
+        case RenderFormat::EAC_R11G11_UNORM:
             return 4;
         default:
             assert(false && "Unknown format.");
@@ -1883,9 +1903,17 @@ namespace plume {
         bool descriptorIndexing = false;
         bool scalarBlockLayout = false;
 
+        // Upper bounds for a single descriptor set. Renderers sizing large bindless sets
+        // must clamp to these (PowerVR in particular reports small limits).
+        uint32_t maxSampledImageDescriptors = 0;
+        uint32_t maxSamplerDescriptors = 0;
+
         // BC1-BC7 sampled texture support. Universal on desktop, but absent on most
         // mobile GPUs (Mali/PowerVR expose only ETC2/ASTC).
         bool textureCompressionBC = false;
+
+        // ETC2/EAC sampled texture support. Universal on mobile, absent on desktop.
+        bool textureCompressionETC2 = false;
 
         // Buffers.
         bool bufferDeviceAddress = false;

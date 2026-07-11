@@ -439,6 +439,18 @@ namespace plume {
                return MTL::PixelFormatBC7_RGBAUnorm;
            case RenderFormat::BC7_UNORM_SRGB:
                return MTL::PixelFormatBC7_RGBAUnorm_sRGB;
+           case RenderFormat::ETC2_RGB8_UNORM:
+               return MTL::PixelFormatETC2_RGB8;
+           case RenderFormat::ETC2_RGB8_UNORM_SRGB:
+               return MTL::PixelFormatETC2_RGB8_sRGB;
+           case RenderFormat::ETC2_RGBA8_UNORM:
+               return MTL::PixelFormatEAC_RGBA8;
+           case RenderFormat::ETC2_RGBA8_UNORM_SRGB:
+               return MTL::PixelFormatEAC_RGBA8_sRGB;
+           case RenderFormat::EAC_R11_UNORM:
+               return MTL::PixelFormatEAC_R11Unorm;
+           case RenderFormat::EAC_R11G11_UNORM:
+               return MTL::PixelFormatEAC_RG11Unorm;
             default:
                 assert(false && "Unknown format.");
                 return MTL::PixelFormatInvalid;
@@ -3351,6 +3363,10 @@ namespace plume {
         // All macOS GPUs support BC.
         capabilities.textureCompressionBC = true;
 #endif
+        capabilities.textureCompressionETC2 = mtl->supportsFamily(MTL::GPUFamilyApple3);
+        // Metal argument buffers allow very large descriptor arrays on Apple GPUs.
+        capabilities.maxSampledImageDescriptors = 500000;
+        capabilities.maxSamplerDescriptors = 2048;
         capabilities.bufferDeviceAddress = mtl->supportsFamily(MTL::GPUFamilyApple3);
         capabilities.presentWait = false;
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);

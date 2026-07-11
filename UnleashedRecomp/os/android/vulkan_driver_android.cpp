@@ -589,9 +589,11 @@ static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
         "\n"
         "NON-ADRENO DEVICES (Mali / PowerVR / Xclipse): the bundled driver is\n"
         "Adreno-only, so the game automatically uses the system Vulkan driver\n"
-        "instead. BC textures are decompressed on the CPU when the driver lacks\n"
-        "them. On Mali you can experiment with importing a PanVK build (a plain\n"
-        ".so) here. Samsung Xclipse compatibility packages from\n"
+        "instead. BC textures are transcoded to ETC2/EAC (or decompressed) on\n"
+        "the CPU when the driver lacks them; create force_no_bc.txt in THIS\n"
+        "folder to test that path on hardware with native BC support. On Mali\n"
+        "you can experiment with importing a PanVK build (a plain .so) here.\n"
+        "Samsung Xclipse compatibility packages from\n"
         "https://github.com/WearyConcern1165/ExynosTools are multi-file bundles\n"
         "and cannot be imported here yet.\n");
 

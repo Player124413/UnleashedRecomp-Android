@@ -222,6 +222,14 @@ namespace plume {
             return DXGI_FORMAT_BC7_UNORM;
         case RenderFormat::BC7_UNORM_SRGB:
             return DXGI_FORMAT_BC7_UNORM_SRGB;
+        case RenderFormat::ETC2_RGB8_UNORM:
+        case RenderFormat::ETC2_RGB8_UNORM_SRGB:
+        case RenderFormat::ETC2_RGBA8_UNORM:
+        case RenderFormat::ETC2_RGBA8_UNORM_SRGB:
+        case RenderFormat::EAC_R11_UNORM:
+        case RenderFormat::EAC_R11G11_UNORM:
+            assert(false && "ETC2/EAC formats do not exist in D3D12.");
+            return DXGI_FORMAT_FORCE_UINT;
         default:
             assert(false && "Unknown format.");
             return DXGI_FORMAT_FORCE_UINT;
@@ -3811,8 +3819,12 @@ namespace plume {
         // Fill capabilities.
         capabilities.descriptorIndexing = true;
         capabilities.scalarBlockLayout = true;
-        // BC formats are mandatory in D3D12.
+        // BC formats are mandatory in D3D12; ETC2 does not exist there.
         capabilities.textureCompressionBC = true;
+        capabilities.textureCompressionETC2 = false;
+        // Resource binding tier 2+ allows full heaps; sampler heaps are capped by D3D12.
+        capabilities.maxSampledImageDescriptors = 1000000;
+        capabilities.maxSamplerDescriptors = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
         capabilities.bufferDeviceAddress = true;
         capabilities.presentWait = true;
         capabilities.queryPools = true;
