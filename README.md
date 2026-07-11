@@ -1,3 +1,46 @@
+# Unleashed Recompiled for Android
+
+Play the Xbox 360 version of *Sonic Unleashed* natively on a supported Android device.
+
+This is an unofficial Android port of [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp). It runs the game through static recompilation rather than emulating an Xbox 360, and includes an Android app, touch controls, gamepad support, a mod manager, and a custom Vulkan driver for many Qualcomm Adreno GPUs.
+
+> [!IMPORTANT]
+> This project does not include the game. You must supply files from your own legally acquired copy of *Sonic Unleashed* for Xbox 360.
+
+> [!WARNING]
+> This is still an experimental community port. Performance and stability vary by phone, Android version, and GPU driver. Keep a copy of your saves and game files.
+
+## What works
+
+- The full game, including title screens and regular gameplay
+- ARM64 Android devices
+- On-screen touch controls with multi-touch
+- Bluetooth and USB controllers
+- Sound through speakers, wired headphones, and Bluetooth devices
+- HMM and UMM-style mods through the included **Unleashed Mods** app
+- Built-in Turnip driver plus importing another compatible Turnip `.so`
+- Game-file access through Android's system Files app
+- Logs and hang diagnostics that can be shared without `adb`
+
+The main development targets are Adreno 710, 725, 732, and 750. Adreno 720 and 722 are included in the bundled driver but need more testing. Other Adreno 6xx/7xx devices may work, but are not guaranteed.
+
+Mali, PowerVR, Xclipse, and other non-Adreno GPUs are not currently supported by the bundled driver.
+
+## Before you install
+
+You need:
+
+- A 64-bit Android device
+- Android 9 or newer
+- A supported Qualcomm Adreno GPU
+- Several gigabytes of free storage
+- Your own Xbox 360 game dump
+
+For the smoothest first run, start with the default graphics settings. The Android build defaults to a 50% resolution scale, no anti-aliasing, 4× anisotropic filtering, and motion blur disabled.
+
+## Installation
+
+1. Download the latest APK from the repository's [Releases](https://github.com/SansNope/UnleashedRecomp-Android/releases) page.
 2. Allow your browser or file manager to install apps from unknown sources when Android asks.
 3. Install and launch **UnleashedRecomp** once. The first launch creates the app's folders and prepares the bundled graphics driver.
 4. If the game reports that its files are missing, open Android's Files app and choose **Unleashed Recomp game files**.
