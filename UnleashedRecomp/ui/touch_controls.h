@@ -6,10 +6,10 @@
 // buttons) as an ImGui overlay and synthesises an XAMINPUT_GAMEPAD state that the
 // HID layer injects for player 1 when touch is the active input source.
 //
-// Visibility rule (see hid/driver/sdl_hid.cpp):
-//   - visible by default,
-//   - hidden as soon as real gamepad input is received,
-//   - shown again on the next screen touch.
+// In Auto mode, visibility follows the active input source (see
+// hid/driver/sdl_hid.cpp): visible by default, hidden as soon as real gamepad
+// input is received, and shown again on the next screen touch. The Android
+// Touch Controls setting can override that state with Always On or Off.
 
 class TouchControls
 {
@@ -18,8 +18,9 @@ public:
     // HID layer falls back to any physical controller.
     static bool IsVisible();
 
-    // Toggle visibility. Called with false from the HID layer when a physical
-    // controller reports input; called with true internally on touch.
+    // Update Auto mode's visibility. Called with false from the HID layer when
+    // a physical controller reports input; called with true internally on touch.
+    // Always On and Off take precedence without losing the remembered Auto state.
     static void SetVisible(bool visible);
 
     // Latest synthesised pad state (player 1). Valid only while IsVisible().

@@ -28,6 +28,17 @@
 // TODO:
 // - Fix resource pools.
 
+// Per-frame command stream counters for the app's profiler overlay. Incremented
+// here on the command-recording thread, snapshotted and reset by the app at the
+// end of each frame (see DrawProfiler/Present in video.cpp).
+extern "C" {
+    uint32_t g_plumeDrawCalls = 0;
+    uint32_t g_plumeRenderPassBegins = 0;
+    uint32_t g_plumePipelineBinds = 0;
+    uint32_t g_plumeBarrierCalls = 0;
+    uint32_t g_plumeFramebufferSets = 0;
+}
+
 namespace plume {
     // Backend constants.
 
@@ -2408,6 +2419,55 @@ namespace plume {
         return (vk == VK_NULL_HANDLE) || (windowWidth != width) || (windowHeight != height) || (requiredPresentMode != createdPresentMode);
     }
 
+    bool VulkanSwapChain::recreateSurface(RenderWindow newRenderWindow) {
+#   if defined(__ANDROID__)
+        VulkanInterface *renderInterface = commandQueue->device->renderInterface;
+
+        // The old surface may still have presents in flight on the queue; make sure the
+        // device is fully idle before destroying the swap chain images underneath them.
+        vkDeviceWaitIdle(commandQueue->device->vk);
+
+        releaseImageViews();
+        releaseSwapChain();
+
+        if (surface != VK_NULL_HANDLE) {
+            vkDestroySurfaceKHR(renderInterface->instance, surface, nullptr);
+            surface = VK_NULL_HANDLE;
+        }
+
+        renderWindow = newRenderWindow;
+        if (renderWindow == nullptr) {
+            return false;
+        }
+
+        VkAndroidSurfaceCreateInfoKHR surfaceCreateInfo = {};
+        surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+        surfaceCreateInfo.window = renderWindow;
+
+        VkResult res = vkCreateAndroidSurfaceKHR(renderInterface->instance, &surfaceCreateInfo, nullptr, &surface);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "vkCreateAndroidSurfaceKHR failed with error code 0x%X.\n", res);
+            surface = VK_NULL_HANDLE;
+            return false;
+        }
+
+        // Composite alpha support belongs to the surface, so re-pick it for the new one.
+        // The picked surface format is a physical device property and carries over.
+        VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
+        if (surfaceCapabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) {
+            pickedAlphaFlag = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        }
+        else if (surfaceCapabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) {
+            pickedAlphaFlag = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+        }
+
+        return true;
+#   else
+        return RenderSwapChain::recreateSurface(newRenderWindow);
+#   endif
+    }
+
     void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
         // Immediate mode must be supported and the presentation mode will only be used on the next resize.
         // needsResize() will return as true as long as the created and required present mode do not match.
@@ -2484,8 +2544,19 @@ namespace plume {
         assert(signalSemaphore != nullptr);
 
         VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(signalSemaphore);
-        VkResult res = vkAcquireNextImageKHR(commandQueue->device->vk, vk, UINT64_MAX, interfaceSemaphore->vk, VK_NULL_HANDLE, textureIndex);
+#   if defined(__ANDROID__)
+        // If the ANativeWindow died while the app was backgrounded, an infinite acquire
+        // never returns and freezes the frame loop before lifecycle events can be pumped.
+        // Time out instead; the caller treats the failure as "recreate surface + swap chain".
+        constexpr uint64_t acquireTimeout = 2000000000; // 2 seconds
+#   else
+        constexpr uint64_t acquireTimeout = UINT64_MAX;
+#   endif
+        VkResult res = vkAcquireNextImageKHR(commandQueue->device->vk, vk, acquireTimeout, interfaceSemaphore->vk, VK_NULL_HANDLE, textureIndex);
         if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
+#   if defined(__ANDROID__)
+            fprintf(stderr, "vkAcquireNextImageKHR failed with error code 0x%X.\n", res);
+#   endif
             return false;
         }
 
@@ -2826,6 +2897,8 @@ namespace plume {
             return;
         }
 
+        g_plumeBarrierCalls++;
+
         endActiveRenderPass();
 
         const bool geometryEnabled = queue->device->capabilities.geometryShader;
@@ -2922,17 +2995,21 @@ namespace plume {
     void VulkanCommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
         checkActiveRenderPass();
 
+        g_plumeDrawCalls++;
         vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
     }
-    
+
     void VulkanCommandList::drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) {
         checkActiveRenderPass();
 
+        g_plumeDrawCalls++;
         vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
     }
 
     void VulkanCommandList::setPipeline(const RenderPipeline *pipeline) {
         assert(pipeline != nullptr);
+
+        g_plumePipelineBinds++;
 
         const VulkanPipeline *interfacePipeline = static_cast<const VulkanPipeline *>(pipeline);
         switch (interfacePipeline->type) {
@@ -3099,6 +3176,8 @@ namespace plume {
     }
 
     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
+        g_plumeFramebufferSets++;
+
         endActiveRenderPass();
 
         if (framebuffer != nullptr) {
@@ -3480,6 +3559,7 @@ namespace plume {
             beginInfo.renderArea.extent.height = targetFramebuffer->height;
             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
             activeRenderPass = targetFramebuffer->renderPass;
+            g_plumeRenderPassBegins++;
         }
     }
 

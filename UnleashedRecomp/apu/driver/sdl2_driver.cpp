@@ -1,8 +1,17 @@
 #include <apu/audio.h>
+#include <app.h>
 #include <cpu/guest_thread.h>
 #include <kernel/heap.h>
 #include <os/logger.h>
+#include <ui/game_window.h>
 #include <user/config.h>
+
+#ifdef __ANDROID__
+extern "C" void Android_JNI_FlushAudioOutput(void);
+extern "C" void Android_JNI_PauseAudioOutput(void);
+extern "C" void Android_JNI_ResumeAudioOutput(void);
+extern "C" int Android_JNI_RouteAudioOutput(int device_id);
+#endif
 
 // ============================================================================================
 // Audio output, v2 ("clocked producer / trivial consumer").
@@ -46,13 +55,24 @@ static bool g_downMixToStereo;
 // Bluetooth and 1024-burst HALs comfortable.
 #ifdef __ANDROID__
 #define APU_DEVICE_SAMPLES (XAUDIO_NUM_SAMPLES * 4)
+// Sixteen guest frames leave three 1024-sample device callbacks of scheduling headroom,
+// while avoiding the 128 ms steady-state delay of the previous 24-frame cushion.
+static constexpr size_t CUSHION_FRAMES = 16;
+static constexpr size_t ROUTE_PREFILL_FRAMES = 16;
 #else
 #define APU_DEVICE_SAMPLES XAUDIO_NUM_SAMPLES
+static constexpr size_t CUSHION_FRAMES = 12;
+static constexpr size_t ROUTE_PREFILL_FRAMES = 12;
 #endif
 
-static constexpr size_t CUSHION_FRAMES = 12;  // ~64 ms of jitter absorption
-static constexpr size_t FIFO_CAPACITY_FRAMES = CUSHION_FRAMES + 10; // cushion + stock MAX_LATENCY
+static constexpr size_t FIFO_CAPACITY_FRAMES = 64;
 static constexpr int64_t DEVICE_DEAD_NANOS = 1'000'000'000; // 1 s without consumption = stalled stream
+static constexpr int64_t ROUTE_REMOVE_DEBOUNCE_NANOS = 500'000'000; // output sink removed (BT off)
+static constexpr int64_t ROUTE_BT_ADD_DEBOUNCE_NANOS = 1'000'000'000; // wait for A2DP codec before reopen
+static constexpr int64_t ROUTE_BT_ADD_RETRY_NANOS = 500'000'000;
+static constexpr int ROUTE_BT_ADD_MAX_ATTEMPTS = 4;
+static constexpr uint32_t DRIFT_CORRECTION_MIN_DRY_CALLBACKS = 3; // avoid pulsing on brief underruns
+static constexpr int64_t BT_SOFT_TRANSITION_HOLDOFF_NANOS = 5'000'000'000; // suppress drift fix after BT soft reconnect
 
 // FIFO between the producer thread and the SDL audio callback. Byte-granular ring so odd
 // device chunk sizes work. Guarded by SDL_LockAudioDevice (the callback runs with the device
@@ -61,6 +81,25 @@ static std::vector<uint8_t> g_fifo;
 static size_t g_fifoHead; // read position
 static size_t g_fifoUsed; // bytes stored
 static std::atomic<int64_t> g_lastConsumeTime{}; // updated by the callback; watchdog input
+static std::atomic<uint32_t> g_consecutiveDryCallbacks{}; // partial/full FIFO underruns in the device callback
+static std::atomic<uint32_t> g_totalDryCallbacks{};
+static std::atomic<int> g_lastCallbackBytes{};
+static std::atomic<int> g_maxCallbackBytes{};
+static std::atomic<int64_t> g_routeReopenAfter{}; // monotonic deadline; audio thread performs the reopen
+static std::atomic<int> g_pendingOutputDeviceIndex{ -1 }; // latest SDL output index from a hotplug add
+static std::atomic<int> g_reopenOutputDeviceIndex{ -1 }; // consumed by CreateAudioDevice on full reopen fallback
+
+static std::atomic<bool> g_preserveFifoOnReopen{}; // keep FIFO across REMOVE reopen only
+static std::atomic<bool> g_pendingReopenPreserveFifo{ true };
+static std::atomic<bool> g_pendingRouteIsAdd{}; // BT added vs output removed
+static std::atomic<int> g_pendingRouteAndroidId{0}; // Android device id for lightweight route attempt on ADD
+static std::atomic<int> g_pendingRouteAttempts{0};
+static std::atomic<bool> g_routeChangeInProgress{};
+static std::atomic<bool> g_rebuildCushion{}; // reset slot clock to boot-style cushion (not sync-to-now)
+static std::atomic<bool> g_deferUnpauseUntilPrefilled{}; // route change: pause until full cushion refills
+static std::atomic<int64_t> g_driftCorrectionHoldoffUntil{};
+static std::atomic<int64_t> g_firstDeviceOpenTime{}; // for early-boot BT debounce
+static std::atomic<bool> g_appInBackground{}; // app minimized — must not resume playback
 static bool g_lastCallSubmitted; // did the last guest invocation submit a frame?
 
 static int64_t MonotonicNanos()
@@ -75,6 +114,30 @@ static size_t FrameBytes()
     return channels * XAUDIO_NUM_SAMPLES * sizeof(float);
 }
 
+static void MaybeResumePlaybackAfterPrefill()
+{
+    if (g_appInBackground.load(std::memory_order_relaxed))
+        return;
+
+    if (g_routeChangeInProgress.load(std::memory_order_relaxed))
+        return;
+
+    if (!g_deferUnpauseUntilPrefilled.load(std::memory_order_relaxed))
+        return;
+
+    size_t fifoBytes = 0;
+    SDL_LockAudioDevice(g_audioDevice);
+    fifoBytes = g_fifoUsed;
+    SDL_UnlockAudioDevice(g_audioDevice);
+
+    if (fifoBytes < ROUTE_PREFILL_FRAMES * FrameBytes())
+        return;
+
+    g_deferUnpauseUntilPrefilled.store(false, std::memory_order_relaxed);
+    SDL_PauseAudioDevice(g_audioDevice, 0);
+    LOGF("Audio output resumed after prefill ({} bytes in FIFO).", fifoBytes);
+}
+
 static void FifoWrite(const uint8_t* data, size_t size)
 {
     // Called with the device lock held. Caller guarantees capacity.
@@ -85,13 +148,29 @@ static void FifoWrite(const uint8_t* data, size_t size)
     g_fifoUsed += size;
 }
 
+static void ClearAudioFifo()
+{
+    SDL_LockAudioDevice(g_audioDevice);
+    g_fifoHead = 0;
+    g_fifoUsed = 0;
+    SDL_UnlockAudioDevice(g_audioDevice);
+}
+
 static void AudioDeviceCallback(void* userdata, Uint8* stream, int len)
 {
+    g_lastCallbackBytes.store(len, std::memory_order_relaxed);
+    int prevMax = g_maxCallbackBytes.load(std::memory_order_relaxed);
+    while (len > prevMax && !g_maxCallbackBytes.compare_exchange_weak(prevMax, len, std::memory_order_relaxed))
+    {
+    }
+
     g_lastConsumeTime.store(MonotonicNanos(), std::memory_order_relaxed);
 
     if (g_fifo.empty())
     {
         memset(stream, 0, len);
+        g_consecutiveDryCallbacks.fetch_add(1, std::memory_order_relaxed);
+        g_totalDryCallbacks.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -103,11 +182,276 @@ static void AudioDeviceCallback(void* userdata, Uint8* stream, int len)
     g_fifoUsed -= toCopy;
 
     if (toCopy < size_t(len))
+    {
         memset(stream + toCopy, 0, len - toCopy); // ran dry: this slice plays silence
+        g_consecutiveDryCallbacks.fetch_add(1, std::memory_order_relaxed);
+        g_totalDryCallbacks.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        g_consecutiveDryCallbacks.store(0, std::memory_order_relaxed);
+    }
 }
 
 static std::unique_ptr<std::thread> g_audioThread;
 static volatile bool g_audioThreadShouldExit;
+
+static void CreateAudioDevice();
+
+static void ScheduleAudioRouteChange(const char* reason, int deviceId, int64_t debounceNanos)
+{
+    const int64_t deadline = MonotonicNanos() + debounceNanos;
+    int64_t prev = g_routeReopenAfter.load(std::memory_order_relaxed);
+    while (deadline > prev)
+    {
+        if (g_routeReopenAfter.compare_exchange_weak(prev, deadline, std::memory_order_relaxed, std::memory_order_relaxed))
+            break;
+    }
+
+    LOGF("Audio route change: scheduling handler ({}, id={}).", reason, deviceId);
+}
+
+static void PerformRouteReopen(const char* label, int reopenIndex, bool preserveFifo)
+{
+    // Android recreates a dead IAudioTrack on route change (SDL issue #4985). nullptr reopen
+    // picks up the current system default (BT after A2DP settle, speaker after unplug).
+    g_pendingOutputDeviceIndex.store(-1, std::memory_order_relaxed);
+    g_reopenOutputDeviceIndex.store(reopenIndex, std::memory_order_relaxed);
+
+    // Preserve FIFO and avoid full clock reset on route changes.
+    // This reduces the "burst of guest renders" that causes choppiness.
+    // The existing CreateAudioDevice has save/restore logic if preserve is set.
+    g_preserveFifoOnReopen.store(preserveFifo, std::memory_order_relaxed);
+    g_routeChangeInProgress.store(true, std::memory_order_relaxed);
+
+#ifdef __ANDROID__
+    Android_JNI_FlushAudioOutput();
+#endif
+
+    SDL_PauseAudioDevice(g_audioDevice, 1);
+    g_deferUnpauseUntilPrefilled.store(true, std::memory_order_relaxed);
+    CreateAudioDevice();
+
+    // Do NOT force full cushion rebuild here — we want to keep the virtual clock
+    // as continuous as possible. Holdoff is still set to suppress drift correction briefly.
+    g_rebuildCushion.store(true, std::memory_order_release);
+    g_driftCorrectionHoldoffUntil.store(MonotonicNanos() + BT_SOFT_TRANSITION_HOLDOFF_NANOS, std::memory_order_relaxed);
+    g_consecutiveDryCallbacks.store(0, std::memory_order_relaxed);
+    g_lastConsumeTime.store(MonotonicNanos(), std::memory_order_relaxed);
+    g_routeChangeInProgress.store(false, std::memory_order_relaxed);
+    LOGF("Audio route change: {} - {} reopen (preserve FIFO: {}, cushion rebuild).", label,
+        reopenIndex >= 0 ? "routed" : "default", preserveFifo ? "yes" : "no");
+}
+
+static void TryProcessAudioRouteChange()
+{
+    const int64_t reopenAfter = g_routeReopenAfter.load(std::memory_order_relaxed);
+    if (reopenAfter == 0 || MonotonicNanos() < reopenAfter)
+        return;
+
+    g_routeReopenAfter.store(0, std::memory_order_relaxed);
+
+    if (g_audioDevice == 0)
+    {
+        return;
+    }
+
+    const bool isAdd = g_pendingRouteIsAdd.exchange(false, std::memory_order_relaxed);
+    int androidId = g_pendingRouteAndroidId.exchange(0, std::memory_order_relaxed);
+    const int outputIndex = g_pendingOutputDeviceIndex.load(std::memory_order_relaxed);
+
+    if (isAdd && androidId != 0)
+    {
+#ifdef __ANDROID__
+        LOGF("Audio route change: opening routed output {} directly for Android id {}.", outputIndex, androidId);
+#endif
+    }
+
+    PerformRouteReopen(isAdd ? "output added" : "output removed", isAdd ? outputIndex : -1, !isAdd);
+}
+
+static void PauseAudioForBackground()
+{
+    if (g_audioDevice == 0)
+        return;
+
+    SDL_PauseAudioDevice(g_audioDevice, 1);
+#ifdef __ANDROID__
+    Android_JNI_FlushAudioOutput();
+    Android_JNI_PauseAudioOutput();
+#endif
+    g_appInBackground.store(true, std::memory_order_release);
+}
+
+static void ResumeAudioFromForeground()
+{
+    if (g_audioDevice == 0)
+    {
+        g_appInBackground.store(false, std::memory_order_release);
+        return;
+    }
+
+    if (!g_appInBackground.load(std::memory_order_acquire))
+        return;
+
+    // The virtual producer clock uses wall time. If we resumed it unchanged, it would try
+    // to render every slot missed in the background, briefly overloading the game and
+    // desynchronizing audio. Start a fresh cushion from the foreground instant instead.
+    SDL_PauseAudioDevice(g_audioDevice, 1);
+    ClearAudioFifo();
+    g_deferUnpauseUntilPrefilled.store(true, std::memory_order_relaxed);
+    g_rebuildCushion.store(true, std::memory_order_release);
+    g_consecutiveDryCallbacks.store(0, std::memory_order_relaxed);
+    g_lastConsumeTime.store(MonotonicNanos(), std::memory_order_relaxed);
+    g_driftCorrectionHoldoffUntil.store(MonotonicNanos() + BT_SOFT_TRANSITION_HOLDOFF_NANOS, std::memory_order_relaxed);
+    g_appInBackground.store(false, std::memory_order_release);
+
+#ifdef __ANDROID__
+    Android_JNI_ResumeAudioOutput();
+#endif
+
+    LOGF("Audio background resume: rebuilding {}-frame cushion.", CUSHION_FRAMES);
+}
+
+extern "C" void Unleashed_AppSetPaused(int paused)
+{
+#ifdef __ANDROID__
+    // SDL's Android pause/resume semaphore handshake can deliver a spurious "resume"
+    // right after backgrounding (observed on device: resume 40 ms after pause, audio
+    // kept playing in background). A genuinely foregrounded app always has a native
+    // window - ignore resumes without one. The game tick (app.cpp) unfreezes us when
+    // the window actually returns.
+    if (!paused && GameWindow::GetAndroidNativeWindow() == nullptr)
+    {
+        LOG("Ignoring spurious app resume: native window is gone (still backgrounded).");
+        return;
+    }
+
+    App::s_androidPaused.store(paused != 0, std::memory_order_release);
+
+    // The hang watchdog would read the intentional freeze as a game hang and spam
+    // thread dumps into log.txt; suspend it for the duration.
+    os::logger::SetWatchdogSuspended(paused != 0);
+#endif
+
+#if APU_PULL_MODEL
+    if (paused)
+        PauseAudioForBackground();
+    else
+        ResumeAudioFromForeground();
+#else
+    (void)paused;
+#endif
+
+    LOGF("App {} (game loop + audio{}).", paused ? "paused" : "resumed",
+        paused ? " stopped" : " restarted");
+}
+
+static int AppLifecycleWatch(void* userdata, SDL_Event* event)
+{
+    if (event == nullptr)
+        return 0;
+
+    // Diagnostics only. SDL's Android pause/resume events proved unreliable in this app
+    // (spurious resume 40 ms after pause in one run, no events at all in another - its
+    // semaphore handshake assumes a single-threaded event-polling app, which this is not).
+    // Lifecycle state is driven by AndroidWindowWatcherThread instead.
+    if (event->type == SDL_APP_DIDENTERBACKGROUND)
+        LOG("SDL background event (informational only).");
+    else if (event->type == SDL_APP_DIDENTERFOREGROUND)
+        LOG("SDL foreground event (informational only).");
+
+    return 0;
+}
+
+#ifdef __ANDROID__
+// Freezes/unfreezes the game based on the one lifecycle signal that cannot lie or get
+// lost: the ANativeWindow. The OS destroys it when the app is backgrounded and creates
+// a new one on restore. A dedicated thread watches it because neither the game tick nor
+// SDL's event pump can be trusted to run at that moment - the main thread was observed
+// wedged inside the GPU driver on a dead swapchain for the whole backgrounded period.
+static void AndroidWindowWatcherThread()
+{
+    bool seenWindow = false;
+    bool paused = false;
+    int nullSamples = 0;
+    int aliveSamples = 0;
+
+    for (;;)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        const bool windowAlive = GameWindow::GetAndroidNativeWindow() != nullptr;
+        if (windowAlive)
+        {
+            seenWindow = true;
+            nullSamples = 0;
+            aliveSamples++;
+        }
+        else
+        {
+            aliveSamples = 0;
+            nullSamples++;
+        }
+
+        // Audio initializes before the window exists; don't treat that as "backgrounded".
+        if (!seenWindow)
+            continue;
+
+        // Two consecutive samples (~100 ms) to debounce transient states.
+        if (!paused && nullSamples >= 2)
+        {
+            paused = true;
+            LOG("Native window gone - freezing game and audio.");
+            Unleashed_AppSetPaused(1);
+        }
+        else if (paused && aliveSamples >= 2)
+        {
+            paused = false;
+            LOG("Native window returned - unfreezing game and audio.");
+            Unleashed_AppSetPaused(0);
+        }
+    }
+}
+#endif
+
+static int AudioHotplugWatch(void* userdata, SDL_Event* event)
+{
+    if (event == nullptr)
+        return 0;
+
+    if (event->type == SDL_AUDIODEVICEADDED && !event->adevice.iscapture)
+    {
+        const char* devName = SDL_GetAudioDeviceName(event->adevice.which, 0);
+        int androidId = (devName != nullptr) ? atoi(devName) : 0;
+
+        const int64_t sinceOpen = MonotonicNanos() - g_firstDeviceOpenTime.load(std::memory_order_relaxed);
+        const int64_t debounce = sinceOpen < 15'000'000'000 ? 500'000'000 : ROUTE_BT_ADD_DEBOUNCE_NANOS;
+        LOGF("Audio route change: output added (SDL index {}, Android id \"{}\") — "
+            "scheduling lightweight route attempt in {} ms.",
+            event->adevice.which, devName != nullptr ? devName : "?", debounce / 1'000'000);
+        g_pendingRouteIsAdd.store(true, std::memory_order_relaxed);
+        g_pendingRouteAndroidId.store(androidId, std::memory_order_relaxed);
+        g_pendingRouteAttempts.store(0, std::memory_order_relaxed);
+        g_pendingOutputDeviceIndex.store(event->adevice.which, std::memory_order_relaxed);
+        ScheduleAudioRouteChange("output added", event->adevice.which, debounce);
+    }
+    else if (event->type == SDL_AUDIODEVICEREMOVED && !event->adevice.iscapture)
+    {
+        if (event->adevice.which == g_audioDevice || event->adevice.which == 0)
+        {
+            g_pendingRouteIsAdd.store(false, std::memory_order_relaxed);
+            g_pendingRouteAndroidId.store(0, std::memory_order_relaxed);
+            g_pendingRouteAttempts.store(0, std::memory_order_relaxed);
+            g_pendingOutputDeviceIndex.store(-1, std::memory_order_relaxed);
+            LOGF("Audio route change: output removed (which={}) — scheduling full reopen.",
+                event->adevice.which);
+            ScheduleAudioRouteChange("output removed", event->adevice.which, ROUTE_REMOVE_DEBOUNCE_NANOS);
+        }
+    }
+
+    return 0;
+}
 
 static void AudioThread()
 {
@@ -122,11 +466,28 @@ static void AudioThread()
     int64_t startTime = MonotonicNanos() - CUSHION_FRAMES * INTERVAL.count();
     uint64_t producedSlots = 0;
     int64_t lastDriftCorrection = 0;
+    int64_t lastUnderrunLog = 0;
+    uint32_t lastDryCallbacksLogged = 0;
 
     g_lastConsumeTime.store(MonotonicNanos(), std::memory_order_relaxed);
 
     while (!g_audioThreadShouldExit)
     {
+        if (g_appInBackground.load(std::memory_order_relaxed))
+        {
+            std::this_thread::sleep_for(50ms);
+            continue;
+        }
+
+        TryProcessAudioRouteChange();
+
+        if (g_rebuildCushion.exchange(false, std::memory_order_acq_rel))
+        {
+            startTime = MonotonicNanos() - CUSHION_FRAMES * INTERVAL.count();
+            producedSlots = 0;
+            lastDriftCorrection = 0;
+        }
+
         const uint64_t elapsedSlots = uint64_t(MonotonicNanos() - startTime) / INTERVAL.count();
 
         while (producedSlots < elapsedSlots && !g_audioThreadShouldExit)
@@ -158,22 +519,52 @@ static void AudioThread()
             producedSlots++;
         }
 
+        MaybeResumePlaybackAfterPrefill();
+
+        {
+            const int64_t nowNs = MonotonicNanos();
+            const uint32_t totalDry = g_totalDryCallbacks.load(std::memory_order_relaxed);
+            if (totalDry != lastDryCallbacksLogged && nowNs - lastUnderrunLog > 1'000'000'000)
+            {
+                size_t fifoBytes = 0;
+                SDL_LockAudioDevice(g_audioDevice);
+                fifoBytes = g_fifoUsed;
+                SDL_UnlockAudioDevice(g_audioDevice);
+
+                LOGF("Audio underrun: dry callbacks {} -> {}, FIFO {} bytes, cb last/max {}/{}, defer {}, route {}, background {}.",
+                    lastDryCallbacksLogged, totalDry, fifoBytes,
+                    g_lastCallbackBytes.load(std::memory_order_relaxed),
+                    g_maxCallbackBytes.load(std::memory_order_relaxed),
+                    g_deferUnpauseUntilPrefilled.load(std::memory_order_relaxed) ? "yes" : "no",
+                    g_routeChangeInProgress.load(std::memory_order_relaxed) ? "yes" : "no",
+                    g_appInBackground.load(std::memory_order_relaxed) ? "yes" : "no");
+
+                lastDryCallbacksLogged = totalDry;
+                lastUnderrunLog = nowNs;
+            }
+        }
+
         // Crystal drift correction: if the device's clock runs slightly faster than ours, the
         // cushion drains by ~1 frame every few minutes and would eventually hit the crackle
         // regime again. When the FIFO is fully dry AND the engine is actively producing audio
         // (never true during level loads - their guest calls submit nothing, so this cannot
         // re-create the catch-up bug), shift the virtual clock back one slot to owe one extra
-        // frame. Rate-limited hard to once per second.
+        // frame. Rate-limited hard to once per second. Suppressed for BT_SOFT_TRANSITION_HOLDOFF
+        // after route reopen so brief post-route underruns do not pulse the clock.
         {
             int64_t nowNs = MonotonicNanos();
             SDL_LockAudioDevice(g_audioDevice);
             bool fifoDry = (g_fifoUsed == 0);
             SDL_UnlockAudioDevice(g_audioDevice);
 
-            if (fifoDry && g_lastCallSubmitted && nowNs - lastDriftCorrection > 1'000'000'000)
+            const uint32_t dryCallbacks = g_consecutiveDryCallbacks.load(std::memory_order_relaxed);
+            const int64_t driftHoldoffUntil = g_driftCorrectionHoldoffUntil.load(std::memory_order_relaxed);
+            if (fifoDry && g_lastCallSubmitted && dryCallbacks >= DRIFT_CORRECTION_MIN_DRY_CALLBACKS &&
+                nowNs >= driftHoldoffUntil && nowNs - lastDriftCorrection > 1'000'000'000)
             {
                 startTime -= INTERVAL.count();
                 lastDriftCorrection = nowNs;
+                g_consecutiveDryCallbacks.store(0, std::memory_order_relaxed);
             }
         }
 
@@ -181,6 +572,8 @@ static void AudioThread()
         auto next = now + (INTERVAL - now.time_since_epoch() % INTERVAL);
 
         std::this_thread::sleep_for(std::chrono::floor<std::chrono::milliseconds>(next - now));
+
+        MaybeResumePlaybackAfterPrefill();
 
         while (std::chrono::steady_clock::now() < next && !g_audioThreadShouldExit)
             std::this_thread::yield();
@@ -191,6 +584,20 @@ static void AudioThread()
 
 static void CreateAudioDevice()
 {
+    std::vector<uint8_t> savedFifo;
+    size_t savedFifoHead = 0;
+    size_t savedFifoUsed = 0;
+    size_t savedFrameBytes = 0;
+    const bool preserveFifo = g_preserveFifoOnReopen.load(std::memory_order_relaxed);
+
+    if (preserveFifo && !g_fifo.empty())
+    {
+        savedFrameBytes = FrameBytes();
+        savedFifoHead = g_fifoHead;
+        savedFifoUsed = g_fifoUsed;
+        savedFifo = g_fifo;
+    }
+
     if (g_audioDevice != NULL)
         SDL_CloseAudioDevice(g_audioDevice);
 
@@ -207,16 +614,41 @@ static void CreateAudioDevice()
 #else
     desired.samples = XAUDIO_NUM_SAMPLES;
 #endif
-    g_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, allowedChanges);
+    const char* devName = nullptr;
+    int reopenIndex = -1;
+#if APU_PULL_MODEL
+    reopenIndex = g_reopenOutputDeviceIndex.exchange(-1, std::memory_order_relaxed);
+    if (reopenIndex >= 0)
+        devName = SDL_GetAudioDeviceName(reopenIndex, 0);
+#endif
+
+    if (devName != nullptr)
+        LOGF("Opening routed output device: SDL index {} Android id \"{}\".", reopenIndex, devName);
+
+    g_audioDevice = SDL_OpenAudioDevice(devName, 0, &desired, &obtained, allowedChanges);
 
     if (obtained.channels != 2 && obtained.channels != XAUDIO_NUM_CHANNELS) // This check may fail only when surround sound is enabled.
     {
         SDL_CloseAudioDevice(g_audioDevice);
-        g_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
+        g_audioDevice = SDL_OpenAudioDevice(devName, 0, &desired, &obtained, 0);
+    }
+
+    if (!g_audioDevice && devName != nullptr)
+    {
+        LOGFN_ERROR("Failed to open routed audio device \"{}\", falling back to default: {}", devName, SDL_GetError());
+        g_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, allowedChanges);
+        if (obtained.channels != 2 && obtained.channels != XAUDIO_NUM_CHANNELS)
+        {
+            SDL_CloseAudioDevice(g_audioDevice);
+            g_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
+        }
     }
 
     if (!g_audioDevice)
         LOGFN_ERROR("Failed to open audio device: {}", SDL_GetError());
+    else if (devName != nullptr)
+        LOGFN("Audio device opened: freq {}, channels {}, samples {} (requested {}) [routed to \"{}\"]",
+            obtained.freq, (int)obtained.channels, (int)obtained.samples, (int)desired.samples, devName);
     else
         LOGFN("Audio device opened: freq {}, channels {}, samples {} (requested {})",
             obtained.freq, (int)obtained.channels, (int)obtained.samples, (int)desired.samples);
@@ -225,16 +657,35 @@ static void CreateAudioDevice()
 
 #if APU_PULL_MODEL
     {
-        // (Re)size the ring for the obtained channel count before any callback runs.
         SDL_LockAudioDevice(g_audioDevice);
-        g_fifo.assign(FIFO_CAPACITY_FRAMES * FrameBytes(), 0);
-        g_fifoHead = 0;
-        g_fifoUsed = 0;
+        const size_t frameBytes = FrameBytes();
+        const size_t fifoCapacity = FIFO_CAPACITY_FRAMES * frameBytes;
+
+        if (preserveFifo && savedFifoUsed > 0 && savedFrameBytes == frameBytes)
+        {
+            g_fifo = std::move(savedFifo);
+            if (g_fifo.size() < fifoCapacity)
+                g_fifo.resize(fifoCapacity);
+            g_fifoHead = savedFifoHead;
+            g_fifoUsed = savedFifoUsed;
+            g_preserveFifoOnReopen.store(false, std::memory_order_relaxed);
+        }
+        else
+        {
+            g_fifo.assign(fifoCapacity, 0);
+            g_fifoHead = 0;
+            g_fifoUsed = 0;
+            g_preserveFifoOnReopen.store(false, std::memory_order_relaxed);
+        }
         SDL_UnlockAudioDevice(g_audioDevice);
 
-        // If the device was reopened after the client had already registered, resume it.
-        if (g_clientCallback != nullptr)
+        if (g_clientCallback != nullptr && !g_deferUnpauseUntilPrefilled.load(std::memory_order_relaxed) &&
+            !g_appInBackground.load(std::memory_order_relaxed))
+        {
             SDL_PauseAudioDevice(g_audioDevice, 0);
+        }
+
+        g_firstDeviceOpenTime.store(MonotonicNanos(), std::memory_order_relaxed);
     }
 #endif
 }
@@ -245,7 +696,6 @@ void XAudioInitializeSystem()
     // Force wasapi on Windows.
     SDL_setenv("SDL_AUDIODRIVER", "wasapi", true);
 #endif
-
     SDL_SetHint(SDL_HINT_AUDIO_CATEGORY, "playback");
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Unleashed Recompiled");
 
@@ -254,6 +704,19 @@ void XAudioInitializeSystem()
         LOGFN_ERROR("Failed to init audio subsystem: {}", SDL_GetError());
         return;
     }
+
+    LOGF("SDL audio driver: \"{}\".", SDL_GetCurrentAudioDriver());
+
+#if APU_PULL_MODEL
+    SDL_EventState(SDL_AUDIODEVICEADDED, SDL_ENABLE);
+    SDL_EventState(SDL_AUDIODEVICEREMOVED, SDL_ENABLE);
+    SDL_AddEventWatch(AudioHotplugWatch, nullptr);
+    SDL_AddEventWatch(AppLifecycleWatch, nullptr);
+#endif
+
+#ifdef __ANDROID__
+    std::thread(AndroidWindowWatcherThread).detach();
+#endif
 
     CreateAudioDevice();
 }
@@ -298,7 +761,11 @@ static void AudioThread()
 
 static void CreateAudioThread()
 {
-    SDL_PauseAudioDevice(g_audioDevice, 0);
+    if (!g_deferUnpauseUntilPrefilled.load(std::memory_order_relaxed) &&
+        !g_appInBackground.load(std::memory_order_relaxed))
+    {
+        SDL_PauseAudioDevice(g_audioDevice, 0);
+    }
     g_audioThreadShouldExit = false;
     g_audioThread = std::make_unique<std::thread>(AudioThread);
 }

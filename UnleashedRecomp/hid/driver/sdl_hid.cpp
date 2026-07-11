@@ -361,9 +361,32 @@ uint32_t hid::GetState(uint32_t dwUserIndex, XAMINPUT_STATE* pState)
 #ifdef __ANDROID__
     // While the on-screen touch controls are the active input source, feed their
     // synthesised state as player 1 (falls through to a physical pad when hidden).
+    // Always On keeps the overlay present, so merge the physical pad instead of
+    // masking it when both input sources are available.
     if (dwUserIndex == 0 && TouchControls::IsVisible())
     {
         pState->Gamepad = TouchControls::GetGamepadState();
+
+        if (Config::TouchControls == EAndroidTouchControlsPolicy::AlwaysOn && g_activeController)
+        {
+            const auto& physical = g_activeController->state;
+            auto& combined = pState->Gamepad;
+
+            combined.wButtons |= physical.wButtons;
+            combined.bLeftTrigger = std::max(combined.bLeftTrigger, physical.bLeftTrigger);
+            combined.bRightTrigger = std::max(combined.bRightTrigger, physical.bRightTrigger);
+
+            auto strongerAxis = [](int16_t touch, int16_t controller)
+            {
+                return std::abs(int(touch)) >= std::abs(int(controller)) ? touch : controller;
+            };
+
+            combined.sThumbLX = strongerAxis(combined.sThumbLX, physical.sThumbLX);
+            combined.sThumbLY = strongerAxis(combined.sThumbLY, physical.sThumbLY);
+            combined.sThumbRX = strongerAxis(combined.sThumbRX, physical.sThumbRX);
+            combined.sThumbRY = strongerAxis(combined.sThumbRY, physical.sThumbRY);
+        }
+
         return ERROR_SUCCESS;
     }
 #endif

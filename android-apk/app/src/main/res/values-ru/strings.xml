@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="mod_manager_launcher_name">Unleashed: моды</string>
+    <string name="mod_manager_title">Моды Unleashed</string>
+    <string name="mod_manager_hint">Скопируйте каждый мод отдельной папкой в каталог mods, обновите список, включите моды и задайте их приоритет. Сохранение создаёт стандартную базу CPKREDIR; для применения перезапустите игру.</string>
+    <string name="mod_manager_open_files">Открыть «Файлы»</string>
+    <string name="mod_manager_refresh">Обновить</string>
+    <string name="mod_manager_save">Сохранить список</string>
+    <string name="mod_manager_empty">Совместимые mod.ini не найдены. Откройте папку, создайте mods/ и скопируйте туда моды HMM или UMM.</string>
+    <string name="mod_manager_found">Найдено совместимых модов: %1$d.</string>
+    <string name="mod_manager_saved">Сохранено активных модов: %1$d (в порядке приоритета).</string>
+    <string name="mod_manager_restart">Изменения модов применятся после перезапуска игры.</string>
+    <string name="mod_manager_error_directory">Не удалось создать каталог настроек: %1$s</string>
+    <string name="mod_manager_error_save">Не удалось сохранить базу модов: %1$s</string>
+    <string name="mod_manager_error_files">Не удалось открыть системное приложение «Файлы».</string>
+</resources>

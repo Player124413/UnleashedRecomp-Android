@@ -3,8 +3,6 @@
      com.gamemaker.game
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    android:versionCode="1"
-    android:versionName="1.0"
     android:installLocation="auto">
 
     <!-- OpenGL ES 2.0 -->
@@ -102,6 +100,34 @@
             </intent-filter>
             -->
         </activity>
+
+        <!-- Separate lightweight launcher entry for managing the existing native
+             CPKREDIR/ModLoader database without starting SDL or Vulkan. -->
+        <activity
+            android:name=".ModManagerActivity"
+            android:label="@string/mod_manager_launcher_name"
+            android:exported="true"
+            android:taskAffinity="${applicationId}.mods"
+            android:theme="@style/ModManagerTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Expose app-owned game files through Android's Storage Access Framework.
+             MANAGE_DOCUMENTS is a signature permission: only the system DocumentsUI can
+             browse the provider directly, and it grants callers narrow URI permissions. -->
+        <provider
+            android:name=".UnleashedDocumentsProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
     </application>
 
 </manifest>

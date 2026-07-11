@@ -100,6 +100,10 @@ static bool g_canReset = false;
 static bool g_isLanguageOptionChanged = false;
 static bool g_titleAnimBegin = true;
 static EChannelConfiguration g_currentChannelConfig;
+#ifdef __ANDROID__
+static EAndroidVulkanDriver g_currentVulkanDriver;
+static EAndroidRenderMode g_currentRenderMode;
+#endif
 
 static double g_appearTime = 0.0;
 
@@ -1241,6 +1245,9 @@ static void DrawConfigOptions()
             DrawConfigOption(rowCount++, yOffset, &Config::VerticalCamera, true);
             DrawConfigOption(rowCount++, yOffset, &Config::Vibration, true);
             DrawConfigOption(rowCount++, yOffset, &Config::AllowBackgroundInput, true);
+#ifdef __ANDROID__
+            DrawConfigOption(rowCount++, yOffset, &Config::TouchControls, true);
+#endif
             DrawConfigOption(rowCount++, yOffset, &Config::ControllerIcons, true);
             break;
 
@@ -1255,6 +1262,10 @@ static void DrawConfigOptions()
 
         case 3: // VIDEO
         {
+#ifdef __ANDROID__
+            DrawConfigOption(rowCount++, yOffset, &Config::VulkanDriver, true);
+            DrawConfigOption(rowCount++, yOffset, &Config::RenderMode, true);
+#endif
             DrawConfigOption(rowCount++, yOffset, &Config::WindowSize,
                 !Config::Fullscreen, &Localise("Options_Desc_NotAvailableFullscreen"),
                 0, 0, (int32_t)GameWindow::GetDisplayModes().size() - 1, false);
@@ -1789,7 +1800,14 @@ void OptionsMenu::Draw()
             DrawFadeTransition();
     }
 
-    s_isRestartRequired = Config::Language != App::s_language || Config::ChannelConfiguration != g_currentChannelConfig;
+    s_isRestartRequired =
+        Config::Language != App::s_language ||
+        Config::ChannelConfiguration != g_currentChannelConfig
+#ifdef __ANDROID__
+        || Config::VulkanDriver != g_currentVulkanDriver
+        || Config::RenderMode != g_currentRenderMode
+#endif
+        ;
 }
 
 void OptionsMenu::Open(bool isPause, SWA::EMenuType pauseMenuType)
@@ -1806,6 +1824,10 @@ void OptionsMenu::Open(bool isPause, SWA::EMenuType pauseMenuType)
     g_selectedItem = nullptr;
     g_titleAnimBegin = true;
     g_currentChannelConfig = Config::ChannelConfiguration;
+#ifdef __ANDROID__
+    g_currentVulkanDriver = Config::VulkanDriver;
+    g_currentRenderMode = Config::RenderMode;
+#endif
 
     /* Store button state so we can track it later
        and prevent the first item being selected. */

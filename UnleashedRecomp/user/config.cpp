@@ -37,6 +37,13 @@ CONFIG_DEFINE_ENUM_TEMPLATE(EControllerIcons)
     { "PlayStation", EControllerIcons::PlayStation }
 };
 
+CONFIG_DEFINE_ENUM_TEMPLATE(EAndroidTouchControlsPolicy)
+{
+    { "Auto",      EAndroidTouchControlsPolicy::Auto },
+    { "Always On", EAndroidTouchControlsPolicy::AlwaysOn },
+    { "Off",       EAndroidTouchControlsPolicy::Off }
+};
+
 CONFIG_DEFINE_ENUM_TEMPLATE(SDL_Scancode)
 {
     { "???", SDL_SCANCODE_UNKNOWN },
@@ -307,6 +314,21 @@ CONFIG_DEFINE_ENUM_TEMPLATE(EGraphicsAPI)
     { "D3D12",  EGraphicsAPI::D3D12 },
 #endif
     { "Vulkan", EGraphicsAPI::Vulkan }
+};
+
+CONFIG_DEFINE_ENUM_TEMPLATE(EAndroidVulkanDriver)
+{
+    { "Auto",     EAndroidVulkanDriver::Auto },
+    { "System",   EAndroidVulkanDriver::System },
+    { "Bundled",  EAndroidVulkanDriver::Bundled },
+    { "Imported", EAndroidVulkanDriver::Imported }
+};
+
+CONFIG_DEFINE_ENUM_TEMPLATE(EAndroidRenderMode)
+{
+    { "Auto",   EAndroidRenderMode::Auto },
+    { "GMEM",   EAndroidRenderMode::GMEM },
+    { "Sysmem", EAndroidRenderMode::Sysmem }
 };
 
 CONFIG_DEFINE_ENUM_TEMPLATE(EWindowState)

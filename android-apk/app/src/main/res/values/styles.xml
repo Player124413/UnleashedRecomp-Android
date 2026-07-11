@@ -4,4 +4,10 @@
     <style name="AppTheme" parent="android:Theme.NoTitleBar.Fullscreen">
         <!-- Customize your theme here. -->
     </style>
+    <style name="ModManagerTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#E69B19</item>
+        <item name="android:navigationBarColor">#111111</item>
+        <item name="android:statusBarColor">#202020</item>
+    </style>
 </resources>

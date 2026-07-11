@@ -12,3 +12,8 @@
 // namespace (plume_vulkan.cpp) without needing to match/qualify a C++ namespace across the
 // UnleashedRecomp <-> plume translation unit boundary.
 extern "C" void *AndroidGetCustomVulkanLoader();
+
+// Called by Video only after both the Vulkan device and a usable swapchain exist. This is
+// deliberately separate from AndroidGetCustomVulkanLoader(): dlopen/vkGetInstanceProcAddr
+// succeeding does not prove that the selected driver can finish Vulkan startup.
+void AndroidMarkVulkanStartupSuccessful();

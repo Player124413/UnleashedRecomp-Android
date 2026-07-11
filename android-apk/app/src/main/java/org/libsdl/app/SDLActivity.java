@@ -612,21 +612,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     @Override
     public void onBackPressed() {
-        // Check if we want to block the back button in case of mouse right click.
-        //
-        // If we do, the normal hardware back button will no longer work and people have to use home,
-        // but the mouse right click will work.
-        //
-        boolean trapBack = SDLActivity.nativeGetHintBoolean("SDL_ANDROID_TRAP_BACK_BUTTON", false);
-        if (trapBack) {
-            // Exit and let the mouse handler handle this button (if appropriate)
-            return;
-        }
-
-        // Default system back button behavior.
-        if (!isFinishing()) {
-            super.onBackPressed();
-        }
+        // A game session must survive the Android Back button just like it survives Home.
+        // super.onBackPressed() finishes this root Activity, tears down SDL/Vulkan and turns
+        // the next launcher tap into a cold boot. Move the existing task to the background
+        // instead; the native-window watcher owns the matching pause/resume transition.
+        // Do this even when SDL_ANDROID_TRAP_BACK_BUTTON is enabled: that hint previously
+        // swallowed the system Back gesture before it could minimize the Android task.
+        minimizeTask();
     }
 
     // Called by JNI from SDL.
@@ -648,7 +640,14 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     // Used to access the system back behavior.
     public void superOnBackPressed() {
-        super.onBackPressed();
+        minimizeTask();
+    }
+
+    private void minimizeTask() {
+        if (!isFinishing()) {
+            boolean moved = moveTaskToBack(true);
+            Log.v(TAG, "moveTaskToBack(true): " + moved);
+        }
     }
 
     @Override
@@ -659,6 +658,19 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
 
         int keyCode = event.getKeyCode();
+        // SDL's focused Surface consumes keyboard events before Activity.onBackPressed()
+        // is reached. Intercept the real Android Back key at the Activity boundary so
+        // SDL_ANDROID_TRAP_BACK_BUTTON cannot swallow the minimize request. Preserve the
+        // platform behavior while the hidden text editor/IME is actually visible, and do
+        // not reinterpret mouse back buttons as task navigation.
+        if (keyCode == KeyEvent.KEYCODE_BACK &&
+            (event.getSource() & InputDevice.SOURCE_MOUSE) != InputDevice.SOURCE_MOUSE &&
+            (mTextEdit == null || mTextEdit.getVisibility() != View.VISIBLE)) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                minimizeTask();
+            }
+            return true;
+        }
         // Ignore certain special keys so they're handled by Android
         if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
             keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
@@ -1032,10 +1044,16 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             return;
         }
 
-        Intent startMain = new Intent(Intent.ACTION_MAIN);
-        startMain.addCategory(Intent.CATEGORY_HOME);
-        startMain.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        mSingleton.startActivity(startMain);
+        // Starting a separate CATEGORY_HOME intent can race task/lifecycle state on vendor
+        // launchers. Background the game's own task on the UI thread instead.
+        mSingleton.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mSingleton != null) {
+                    mSingleton.minimizeTask();
+                }
+            }
+        });
     }
 
     /**

@@ -91,6 +91,10 @@ namespace plume {
         virtual void wait() = 0;
         virtual bool resize() = 0;
         virtual bool needsResize() const = 0;
+        // Recreates the presentation surface on a new native window. Android replaces the
+        // ANativeWindow across background/foreground; the old surface then presents into a
+        // dead window. Backends without this capability return false.
+        virtual bool recreateSurface(RenderWindow renderWindow) { (void)renderWindow; return false; }
         virtual void setVsyncEnabled(bool vsyncEnabled) = 0;
         virtual bool isVsyncEnabled() const = 0;
         virtual uint32_t getWidth() const = 0;

@@ -2,6 +2,7 @@
 
 #include <os/android/storage_android.h>
 #include <os/logger.h>
+#include <user/config.h>
 
 #include <adrenotools/driver.h>
 
@@ -9,44 +10,55 @@
 #include <SDL_system.h>
 
 #include <cstdint>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
+#include <fcntl.h>
 #include <jni.h>
 #include <string>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
-// The driver that ships inside the APK assets: source-built Mesa 26.1.4 Turnip ("univ"
-// build, 2026-07-05) with the per-draw WAIT_FOR_ME fix compiled in (no TU_DEBUG gate),
-// Adreno 732 device ids, and custom FD710/FD720/FD722 device entries (blob-trace-derived
-// magic regs, via Vauzi-17/710). Covers a710/a720/a722/a725/a732/a750 (a750 additionally
-// requires MSAA off, which is the Android config default). Extracted to internal storage
-// on first launch. The FILENAME is kept at its historical value on purpose: existing
-// installs have driver_name.txt pointing at it and only re-extract on a size change (the
-// asset carries a trailing size-marker string for exactly that reason) - renaming it would
-// strand updated installs on the old extracted driver. TU_DEBUG must stay "none": on
-// source builds "flushall" enables Mesa's REAL full per-draw flush (huge FPS hit).
+// The APK variants ship source-built Mesa 26.1.4 Turnip from the same cc9b2874cb69
+// snapshot: either the clean A725 command-buffer-start quirk or the per-draw WAIT_FOR_ME
+// comparator. The FILENAME stays at its historical value because existing installs have
+// driver_name.txt pointing at it. Provisioning compares the complete asset contents, so
+// clean and WFM binaries (which happen to have the same size) still replace one another.
+// The Android Render Mode option selects the normal/GMEM ("none") or Sysmem
+// ("sysmem") TU_DEBUG default. An external driver_import/tu_debug.txt remains a
+// diagnostic override. "flushall" enables Mesa's real full per-draw flush and causes
+// a massive FPS hit.
 static constexpr const char *BUNDLED_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *BUNDLED_DRIVER_ASSET = "turnip/vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *DEFAULT_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a732.so";
+static constexpr const char *LAST_IMPORTED_DRIVER_FILE = "last_imported_driver.txt";
+static constexpr const char *VULKAN_STARTUP_STATE_FILE = "vulkan_startup_state.txt";
 
-// AArch64 "MOVZ w9, #imm16" encodings of the mask that tu6_emit_flushes() ORs into the
-// per-draw flush bits when TU_DEBUG=flushall is set:
-//   0x16FF = TU_CMD_FLAG_ALL_CLEAN | TU_CMD_FLAG_ALL_INVALIDATE (stock Mesa, unusably slow)
-//   0x0200 = TU_CMD_FLAG_WAIT_FOR_ME only - the single bit that fixes the per-draw
-//            "shimmer" corruption on Adreno 725 at a fraction of the cost.
-// A 4-byte pattern can legitimately appear elsewhere (the patched encoding occurs ~8 times
-// naturally in known builds as unrelated code), so imported drivers are only patched where
-// the match is provably this instruction: inside an executable PT_LOAD segment of the ELF
-// and 4-byte aligned in mapped memory. If no such match exists (different Mesa version or
-// codegen), or the match count is implausible, the driver is installed unpatched and the
-// fix simply won't apply.
-static constexpr uint8_t MOVZ_W9_FLUSHALL_MASK[4] = { 0xE9, 0xDF, 0x82, 0x52 };
-static constexpr uint8_t MOVZ_W9_WAIT_FOR_ME[4] = { 0x09, 0x40, 0x80, 0x52 };
-static constexpr size_t MAX_EXPECTED_FLUSHALL_MATCHES = 8; // known builds have 3 (per-gen inlined copies)
+enum class VulkanStartupPhase
+{
+    CustomPending,
+    SafeFallbackPending,
+    RecoveryExhausted,
+};
+
+struct VulkanStartupState
+{
+    VulkanStartupPhase phase{};
+    EAndroidVulkanDriver configuredDriver{};
+    EAndroidRenderMode configuredRenderMode{};
+};
+
+static bool g_vulkanStartupPrepared;
+static bool g_vulkanStartupStateActive;
+static bool g_vulkanStartupSuccessReported;
+static bool g_forceSafeVulkanFallback;
+static bool g_armCustomVulkanStartup;
+static EAndroidVulkanDriver g_runtimeVulkanDriver;
+static EAndroidRenderMode g_runtimeRenderMode;
 
 static std::string GetTurnipDir()
 {
@@ -55,6 +67,319 @@ static std::string GetTurnipDir()
         return {};
 
     return (internalDir / "turnip/").string();
+}
+
+static const char *VulkanDriverName(EAndroidVulkanDriver driver)
+{
+    switch (driver)
+    {
+        case EAndroidVulkanDriver::System:   return "System";
+        case EAndroidVulkanDriver::Bundled:  return "Bundled";
+        case EAndroidVulkanDriver::Imported: return "Imported";
+        case EAndroidVulkanDriver::Auto:
+        default:                             return "Auto";
+    }
+}
+
+static const char *RenderModeName(EAndroidRenderMode mode)
+{
+    switch (mode)
+    {
+        case EAndroidRenderMode::GMEM:   return "GMEM";
+        case EAndroidRenderMode::Sysmem: return "Sysmem";
+        case EAndroidRenderMode::Auto:
+        default:                         return "Auto";
+    }
+}
+
+static const char *StartupPhaseName(VulkanStartupPhase phase)
+{
+    switch (phase)
+    {
+        case VulkanStartupPhase::CustomPending:       return "custom_pending";
+        case VulkanStartupPhase::SafeFallbackPending: return "safe_fallback_pending";
+        case VulkanStartupPhase::RecoveryExhausted:   return "recovery_exhausted";
+        default:                                      return "unknown";
+    }
+}
+
+static std::filesystem::path GetVulkanStartupStatePath()
+{
+    const std::filesystem::path &internalDir = os::android::GetInternalFilesDir();
+    return internalDir.empty() ? std::filesystem::path() : internalDir / VULKAN_STARTUP_STATE_FILE;
+}
+
+static bool SyncDirectory(const std::filesystem::path &directory)
+{
+    int directoryFd = open(directory.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    if (directoryFd < 0)
+        return false;
+
+    const bool ok = fsync(directoryFd) == 0;
+    close(directoryFd);
+    return ok;
+}
+
+// The state is replaced, never edited in place. fsync(temp) + rename + fsync(parent)
+// guarantees that a process/OS kill yields either the complete old state or complete new
+// state, never a half-written marker that could make recovery non-deterministic.
+static bool WriteVulkanStartupState(const VulkanStartupState &state)
+{
+    const std::filesystem::path statePath = GetVulkanStartupStatePath();
+    if (statePath.empty())
+        return false;
+
+    std::filesystem::path tempPath = statePath;
+    tempPath += ".tmp";
+
+    char contents[256];
+    const int length = snprintf(contents, sizeof(contents),
+        "version=1\nphase=%s\nconfigured_driver=%u\nconfigured_render_mode=%u\n",
+        StartupPhaseName(state.phase), unsigned(state.configuredDriver), unsigned(state.configuredRenderMode));
+    if (length <= 0 || size_t(length) >= sizeof(contents))
+        return false;
+
+    int file = open(tempPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (file < 0)
+        return false;
+
+    size_t written = 0;
+    bool ok = true;
+    while (written < size_t(length))
+    {
+        const ssize_t result = write(file, contents + written, size_t(length) - written);
+        if (result > 0)
+        {
+            written += size_t(result);
+            continue;
+        }
+
+        if (result < 0 && errno == EINTR)
+            continue;
+
+        ok = false;
+        break;
+    }
+
+    if (ok)
+        ok = fsync(file) == 0;
+    if (close(file) != 0)
+        ok = false;
+
+    if (!ok || rename(tempPath.c_str(), statePath.c_str()) != 0)
+    {
+        unlink(tempPath.c_str());
+        return false;
+    }
+
+    return SyncDirectory(statePath.parent_path());
+}
+
+static bool RemoveVulkanStartupState()
+{
+    const std::filesystem::path statePath = GetVulkanStartupStatePath();
+    if (statePath.empty())
+        return false;
+
+    if (unlink(statePath.c_str()) != 0 && errno != ENOENT)
+        return false;
+
+    // Also discard an interrupted pre-rename write. It is never considered state by readers.
+    std::filesystem::path tempPath = statePath;
+    tempPath += ".tmp";
+    unlink(tempPath.c_str());
+    return SyncDirectory(statePath.parent_path());
+}
+
+static bool ReadVulkanStartupState(VulkanStartupState &state, bool &stateFileExists)
+{
+    const std::filesystem::path statePath = GetVulkanStartupStatePath();
+    stateFileExists = false;
+    if (statePath.empty())
+        return false;
+
+    FILE *file = fopen(statePath.c_str(), "rb");
+    if (file == nullptr)
+        return false;
+
+    stateFileExists = true;
+    char contents[256]{};
+    const size_t bytesRead = fread(contents, 1, sizeof(contents) - 1, file);
+    const bool readError = ferror(file) != 0;
+    fclose(file);
+    if (readError || bytesRead == 0 || bytesRead == sizeof(contents) - 1)
+        return false;
+
+    unsigned version = 0;
+    unsigned configuredDriver = 0;
+    unsigned configuredRenderMode = 0;
+    char phase[64]{};
+    if (sscanf(contents,
+            "version=%u\nphase=%63s\nconfigured_driver=%u\nconfigured_render_mode=%u",
+            &version, phase, &configuredDriver, &configuredRenderMode) != 4 ||
+        version != 1 ||
+        configuredDriver > unsigned(EAndroidVulkanDriver::Imported) ||
+        configuredRenderMode > unsigned(EAndroidRenderMode::Sysmem))
+    {
+        return false;
+    }
+
+    if (strcmp(phase, "custom_pending") == 0)
+        state.phase = VulkanStartupPhase::CustomPending;
+    else if (strcmp(phase, "safe_fallback_pending") == 0)
+        state.phase = VulkanStartupPhase::SafeFallbackPending;
+    else if (strcmp(phase, "recovery_exhausted") == 0)
+        state.phase = VulkanStartupPhase::RecoveryExhausted;
+    else
+        return false;
+
+    state.configuredDriver = EAndroidVulkanDriver(configuredDriver);
+    state.configuredRenderMode = EAndroidRenderMode(configuredRenderMode);
+    return true;
+}
+
+static bool StartupSelectionMatches(const VulkanStartupState &state)
+{
+    return state.configuredDriver == Config::VulkanDriver.Value &&
+        state.configuredRenderMode == Config::RenderMode.Value;
+}
+
+static void ForceSafeVulkanFallback(const VulkanStartupState &previousState, const char *reason)
+{
+    VulkanStartupState recoveryState
+    {
+        VulkanStartupPhase::SafeFallbackPending,
+        previousState.configuredDriver,
+        previousState.configuredRenderMode,
+    };
+
+    g_forceSafeVulkanFallback = true;
+    g_runtimeVulkanDriver = EAndroidVulkanDriver::System;
+    g_runtimeRenderMode = EAndroidRenderMode::Auto;
+    g_vulkanStartupStateActive = WriteVulkanStartupState(recoveryState);
+
+    LOGF_WARNING("Vulkan boot recovery: {} (previous phase={}, configured driver={}, render mode={}). "
+        "Forcing this startup to System driver + RenderMode Auto; user Config is unchanged.",
+        reason, StartupPhaseName(previousState.phase), VulkanDriverName(previousState.configuredDriver),
+        RenderModeName(previousState.configuredRenderMode));
+
+    if (!g_vulkanStartupStateActive)
+    {
+        LOG_ERROR("Vulkan boot recovery: failed to persist the consumed recovery state atomically.");
+        // Best-effort consumption still prevents an unwritable stale custom_pending file
+        // from forcing the same recovery on every launch.
+        RemoveVulkanStartupState();
+    }
+}
+
+static void PrepareVulkanStartup()
+{
+    if (g_vulkanStartupPrepared)
+        return;
+
+    g_vulkanStartupPrepared = true;
+    g_runtimeVulkanDriver = Config::VulkanDriver.Value;
+    g_runtimeRenderMode = Config::RenderMode.Value;
+
+    VulkanStartupState previousState{};
+    bool stateFileExists = false;
+    const bool validState = ReadVulkanStartupState(previousState, stateFileExists);
+
+    if (stateFileExists && (!validState || previousState.phase == VulkanStartupPhase::CustomPending))
+    {
+        if (!validState)
+        {
+            previousState =
+            {
+                VulkanStartupPhase::CustomPending,
+                Config::VulkanDriver.Value,
+                Config::RenderMode.Value,
+            };
+            ForceSafeVulkanFallback(previousState, "an invalid/incomplete pending marker was left by the previous launch");
+        }
+        else
+        {
+            ForceSafeVulkanFallback(previousState, "the previous custom-driver Vulkan startup did not reach a usable swapchain");
+        }
+        return;
+    }
+
+    if (!validState)
+    {
+        // Arm only immediately before an actual custom-driver dlopen, after paths and the
+        // selected .so have been validated. System mode needs no crash marker.
+        g_armCustomVulkanStartup = g_runtimeVulkanDriver != EAndroidVulkanDriver::System;
+        return;
+    }
+
+    g_vulkanStartupStateActive = true;
+    if (previousState.phase == VulkanStartupPhase::SafeFallbackPending)
+    {
+        // The safe System+Auto attempt itself failed. Consume it without forcing the same
+        // fallback forever. A successful startup still clears this exhausted state.
+        VulkanStartupState exhaustedState
+        {
+            VulkanStartupPhase::RecoveryExhausted,
+            previousState.configuredDriver,
+            previousState.configuredRenderMode,
+        };
+        if (!WriteVulkanStartupState(exhaustedState))
+            LOG_ERROR("Vulkan boot recovery: failed to persist recovery_exhausted state atomically.");
+
+        previousState = exhaustedState;
+        LOGF_WARNING("Vulkan boot recovery: the one-time System + RenderMode Auto recovery did not "
+            "reach a usable swapchain. Automatic recovery is now exhausted for driver={} / render mode={} "
+            "to prevent a restart loop; trying the configured selection without modifying Config.",
+            VulkanDriverName(previousState.configuredDriver), RenderModeName(previousState.configuredRenderMode));
+    }
+
+    if (!StartupSelectionMatches(previousState))
+    {
+        LOGF("Vulkan boot recovery: configured selection changed from driver={} / render mode={} to "
+            "driver={} / render mode={}; enabling crash recovery for the new selection.",
+            VulkanDriverName(previousState.configuredDriver), RenderModeName(previousState.configuredRenderMode),
+            VulkanDriverName(Config::VulkanDriver.Value), RenderModeName(Config::RenderMode.Value));
+        g_armCustomVulkanStartup = g_runtimeVulkanDriver != EAndroidVulkanDriver::System;
+    }
+    else
+    {
+        LOGF_WARNING("Vulkan boot recovery: recovery remains exhausted for driver={} / render mode={}; "
+            "no additional forced fallback will be scheduled until this startup succeeds or the selection changes.",
+            VulkanDriverName(previousState.configuredDriver), RenderModeName(previousState.configuredRenderMode));
+    }
+}
+
+static bool ArmCustomVulkanStartup()
+{
+    if (!g_armCustomVulkanStartup)
+        return true;
+
+    VulkanStartupState state
+    {
+        VulkanStartupPhase::CustomPending,
+        Config::VulkanDriver.Value,
+        Config::RenderMode.Value,
+    };
+
+    if (!WriteVulkanStartupState(state))
+    {
+        // Never enter an untracked custom-driver startup: failure to create the durable
+        // marker deterministically degrades this launch to the safe system path.
+        LOG_ERROR("Vulkan boot recovery: unable to arm the custom startup marker; forcing System driver + RenderMode Auto for this launch.");
+        g_forceSafeVulkanFallback = true;
+        g_runtimeVulkanDriver = EAndroidVulkanDriver::System;
+        g_runtimeRenderMode = EAndroidRenderMode::Auto;
+        g_armCustomVulkanStartup = false;
+        RemoveVulkanStartupState();
+        return false;
+    }
+
+    g_armCustomVulkanStartup = false;
+    g_vulkanStartupStateActive = true;
+    LOGF("Vulkan boot recovery: armed custom startup marker (driver={}, render mode={}); "
+        "it will be cleared only after device + usable swapchain creation.",
+        VulkanDriverName(state.configuredDriver), RenderModeName(state.configuredRenderMode));
+    return true;
 }
 
 static bool ReadWholeFile(const std::filesystem::path &path, std::vector<uint8_t> &data)
@@ -123,90 +448,6 @@ static void WriteTextFile(const std::filesystem::path &path, const char *content
     WriteWholeFile(path, contents, strlen(contents));
 }
 
-struct ElfExecSegment
-{
-    size_t fileOffset;
-    size_t fileSize;
-    uint64_t virtualAddress;
-};
-
-// Returns every executable PT_LOAD segment of a 64-bit little-endian ELF, or an empty
-// vector when the file isn't one (which also makes the patcher below refuse to touch it).
-static std::vector<ElfExecSegment> FindElfExecSegments(const std::vector<uint8_t> &elf)
-{
-    std::vector<ElfExecSegment> segments;
-    if (elf.size() < 0x40 || memcmp(elf.data(), "\177ELF", 4) != 0 || elf[4] != 2 || elf[5] != 1)
-        return segments;
-
-    uint64_t programHeaderOffset;
-    uint16_t programHeaderEntrySize, programHeaderCount;
-    memcpy(&programHeaderOffset, elf.data() + 0x20, sizeof(programHeaderOffset));
-    memcpy(&programHeaderEntrySize, elf.data() + 0x36, sizeof(programHeaderEntrySize));
-    memcpy(&programHeaderCount, elf.data() + 0x38, sizeof(programHeaderCount));
-
-    for (uint16_t i = 0; i < programHeaderCount; i++)
-    {
-        size_t base = size_t(programHeaderOffset) + size_t(i) * programHeaderEntrySize;
-        if (base + 0x28 > elf.size())
-            break;
-
-        uint32_t type, flags;
-        uint64_t fileOffset, virtualAddress, fileSize;
-        memcpy(&type, elf.data() + base + 0x00, sizeof(type));
-        memcpy(&flags, elf.data() + base + 0x04, sizeof(flags));
-        memcpy(&fileOffset, elf.data() + base + 0x08, sizeof(fileOffset));
-        memcpy(&virtualAddress, elf.data() + base + 0x10, sizeof(virtualAddress));
-        memcpy(&fileSize, elf.data() + base + 0x20, sizeof(fileSize));
-
-        if (type == 1 /* PT_LOAD */ && (flags & 1) /* PF_X */ && fileOffset + fileSize <= elf.size())
-            segments.push_back({ size_t(fileOffset), size_t(fileSize), virtualAddress });
-    }
-
-    return segments;
-}
-
-// Replaces MOVZ w9,#0x16ff with MOVZ w9,#0x200 (see constants above) inside executable
-// code only. Returns the number of instructions patched (3 on known builds).
-static size_t PatchDriverFlushallMask(std::vector<uint8_t> &driver)
-{
-    std::vector<ElfExecSegment> segments = FindElfExecSegments(driver);
-    if (segments.empty())
-    {
-        LOG_ERROR("Driver patch: no executable ELF segment found, leaving driver unpatched.");
-        return 0;
-    }
-
-    std::vector<size_t> matches;
-    for (size_t i = 0; i + sizeof(MOVZ_W9_FLUSHALL_MASK) <= driver.size(); i++)
-    {
-        if (memcmp(driver.data() + i, MOVZ_W9_FLUSHALL_MASK, sizeof(MOVZ_W9_FLUSHALL_MASK)) != 0)
-            continue;
-
-        for (const ElfExecSegment &segment : segments)
-        {
-            if (i >= segment.fileOffset &&
-                i + sizeof(MOVZ_W9_FLUSHALL_MASK) <= segment.fileOffset + segment.fileSize &&
-                (segment.virtualAddress + (i - segment.fileOffset)) % 4 == 0)
-            {
-                matches.push_back(i);
-                break;
-            }
-        }
-    }
-
-    if (matches.size() > MAX_EXPECTED_FLUSHALL_MATCHES)
-    {
-        LOGF_ERROR("Driver patch: {} matches exceed the sanity cap of {}, leaving driver unpatched.",
-            matches.size(), MAX_EXPECTED_FLUSHALL_MATCHES);
-        return 0;
-    }
-
-    for (size_t offset : matches)
-        memcpy(driver.data() + offset, MOVZ_W9_WAIT_FOR_ME, sizeof(MOVZ_W9_WAIT_FOR_ME));
-
-    return matches.size();
-}
-
 // Reads a file bundled in the APK assets (SDL routes relative paths to the asset manager).
 static bool ReadAssetFile(const char *assetPath, std::vector<uint8_t> &data)
 {
@@ -227,10 +468,25 @@ static bool ReadAssetFile(const char *assetPath, std::vector<uint8_t> &data)
     return ok;
 }
 
+static uint64_t DriverFingerprint(const std::vector<uint8_t> &driver)
+{
+    // FNV-1a is only a compact log identifier for distinguishing A/B assets. Package
+    // integrity still comes from the APK signature and the published SHA-256 checksum.
+    uint64_t hash = 14695981039346656037ull;
+    for (uint8_t byte : driver)
+    {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+
+    return hash;
+}
+
 // Users can drop an arbitrary Turnip build (plain .so, extracted from the release zip)
-// into <external>/driver_import/. It gets the WAIT_FOR_ME patch applied when possible,
-// is installed to internal storage, selected via driver_name.txt, and the source file is
-// moved to driver_import/installed/ so it isn't re-processed every launch.
+// into <external>/driver_import/. It is copied byte-for-byte to internal storage, selected
+// via driver_name.txt, and moved to driver_import/installed/ so it isn't re-processed every
+// launch. Imported binaries must never be rewritten: exact inputs are required for reliable
+// A/B tests and a byte-pattern patch cannot establish compatibility with an unknown build.
 static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
 {
     const std::filesystem::path &externalDir = os::android::GetExternalFilesDir();
@@ -245,23 +501,20 @@ static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
     WriteTextFile(importDir / "readme.txt",
         "Optional: drop a Mesa Turnip Vulkan driver here as a plain .so file\n"
         "(extract it from the driver zip first, e.g. libvulkan_freedreno.so).\n"
-        "On the next launch it will be installed and selected. If it is an older\n"
-        "stock build containing the known byte pattern, the Adreno 7xx\n"
-        "anti-shimmer patch is applied to it first. Processed files move to the\n"
-        "installed/ subfolder.\n"
+        "On the next launch it will be installed byte-for-byte and selected.\n"
+        "Processed files move to the installed/ subfolder. The app never patches\n"
+        "imported binaries; use a source-built workaround when one is required.\n"
         "\n"
         "You can also create a tu_debug.txt file in THIS folder to set Turnip's\n"
-        "TU_DEBUG options without rebuilding the app; it overrides the internal\n"
-        "default (none). The bundled driver has the anti-shimmer fix compiled\n"
+        "TU_DEBUG options without rebuilding the app; it overrides the Render Mode\n"
+        "selection. The bundled driver has the anti-shimmer fix compiled\n"
         "in and needs no TU_DEBUG options. Diagnostic examples (one per run):\n"
         "  nolrz\n"
         "  sysmem\n"
         "  noubwc\n"
-        "NOTE: \"flushall\" is only for legacy binary-patched drivers, where it\n"
-        "activates their fix. On the bundled driver (or any stock/source-built\n"
-        "one) it enables Mesa's real full per-draw flush - a massive FPS hit,\n"
-        "diagnostic use only.\n"
-        "Delete tu_debug.txt to return to the default (none).\n"
+        "NOTE: \"flushall\" enables Mesa's real full per-draw flush - a massive\n"
+        "FPS hit. It is for diagnostics only and is not an anti-shimmer fix.\n"
+        "Delete tu_debug.txt to return control to the Render Mode option.\n"
         "The app already ships with a working driver; this is for experiments.\n"
         "\n"
         "DIAGNOSTICS: the app writes a log to log.txt in the PARENT folder (one\n"
@@ -291,12 +544,6 @@ static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
             continue;
         }
 
-        size_t patched = PatchDriverFlushallMask(driver);
-        if (patched > 0)
-            LOGF("Driver import: applied WAIT_FOR_ME patch to {} ({} instruction(s)).", fileName, patched);
-        else
-            LOGF("Driver import: flushall mask pattern not found in {}, installing unpatched.", fileName);
-
         if (!WriteWholeFile(turnipDir / fileName, driver.data(), driver.size()))
         {
             LOGF_ERROR("Driver import: failed to install {} to internal storage.", fileName);
@@ -304,33 +551,23 @@ static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
         }
 
         WriteTextFile(turnipDir / "driver_name.txt", fileName.c_str());
-
-        // The fix only fires while TU_DEBUG=flushall gates the (patched) mask in. Don't
-        // overwrite an existing tu_debug.txt - it may carry deliberate extra flags.
-        if (patched > 0)
-            WriteTextFileIfMissing(turnipDir / "tu_debug.txt", "flushall");
-
+        WriteTextFile(turnipDir / LAST_IMPORTED_DRIVER_FILE, fileName.c_str());
         std::filesystem::path installedDir = importDir / "installed";
         std::filesystem::create_directories(installedDir, ec);
         std::filesystem::rename(entry.path(), installedDir / fileName, ec);
         if (ec)
             std::filesystem::remove(entry.path(), ec);
 
-        LOGF("Driver import: installed and selected {}.", fileName);
+        LOGF("Driver import: installed byte-for-byte and selected {}.", fileName);
     }
 }
 
-// First-launch provisioning: extract the bundled pre-patched driver to internal storage
-// and select it. Existing files are never overwritten, so a manually pushed driver or
-// hand-edited driver_name.txt/tu_debug.txt setup keeps working unchanged.
+// Provision the app-owned bundled-driver slot. A different imported driver remains selected
+// through driver_name.txt, but the bundled slot itself follows APK updates byte-for-byte.
 static void InstallBundledDriverIfNeeded(const std::filesystem::path &turnipDir)
 {
-    std::error_code ec;
     std::filesystem::path driverPath = turnipDir / BUNDLED_DRIVER_NAME;
 
-    // Re-extract not only when missing but also on a size mismatch, so a truncated or
-    // stale copy (e.g. from an interrupted first launch or an APK update that ships a
-    // newer driver) heals itself instead of failing to dlopen on every launch.
     std::vector<uint8_t> driver;
     if (!ReadAssetFile(BUNDLED_DRIVER_ASSET, driver))
     {
@@ -338,7 +575,12 @@ static void InstallBundledDriverIfNeeded(const std::filesystem::path &turnipDir)
         return;
     }
 
-    if (!std::filesystem::exists(driverPath, ec) || std::filesystem::file_size(driverPath, ec) != driver.size())
+    LOGF("Bundled Vulkan driver asset: {} bytes, fingerprint {:016x}.",
+        driver.size(), DriverFingerprint(driver));
+
+    std::vector<uint8_t> installedDriver;
+    const bool alreadyInstalled = ReadWholeFile(driverPath, installedDriver) && installedDriver == driver;
+    if (!alreadyInstalled)
     {
         if (!WriteWholeFile(driverPath, driver.data(), driver.size()))
         {
@@ -346,11 +588,10 @@ static void InstallBundledDriverIfNeeded(const std::filesystem::path &turnipDir)
             return;
         }
 
-        LOGF("Extracted bundled Vulkan driver to {}.", driverPath.string());
+        LOGF("Updated bundled Vulkan driver at {}.", driverPath.string());
     }
 
     WriteTextFileIfMissing(turnipDir / "driver_name.txt", BUNDLED_DRIVER_NAME);
-    WriteTextFileIfMissing(turnipDir / "tu_debug.txt", "none");
 }
 
 static void EnsureVulkanDriverInstalled(const std::string &turnipDirString)
@@ -382,6 +623,48 @@ static std::string GetCustomDriverName(const std::string &turnipDir)
     return (bytesRead > 0) ? std::string(buffer) : DEFAULT_DRIVER_NAME;
 }
 
+static std::string GetImportedDriverName(const std::string &turnipDir)
+{
+    const std::filesystem::path turnipPath(turnipDir);
+    char buffer[256]{};
+
+    FILE *file = fopen((turnipPath / LAST_IMPORTED_DRIVER_FILE).c_str(), "rb");
+    if (file != nullptr)
+    {
+        size_t bytesRead = fread(buffer, 1, sizeof(buffer) - 1, file);
+        fclose(file);
+
+        while (bytesRead > 0 &&
+            (buffer[bytesRead - 1] == '\n' || buffer[bytesRead - 1] == '\r' || buffer[bytesRead - 1] == ' '))
+        {
+            --bytesRead;
+        }
+
+        buffer[bytesRead] = '\0';
+        if (bytesRead > 0)
+            return buffer;
+    }
+
+    // Migrate installs made before the Driver UI existed. Their selected imported
+    // driver only lived in driver_name.txt.
+    std::string legacyName = GetCustomDriverName(turnipDir);
+    if (legacyName != BUNDLED_DRIVER_NAME)
+    {
+        WriteTextFile(turnipPath / LAST_IMPORTED_DRIVER_FILE, legacyName.c_str());
+        return legacyName;
+    }
+
+    return {};
+}
+
+static bool IsSafeDriverFileName(const std::string &driverName)
+{
+    const std::filesystem::path path(driverName);
+    return !driverName.empty() &&
+        path == path.filename() &&
+        path.extension() == ".so";
+}
+
 static bool ReadTrimmedTextFile(const std::filesystem::path &path, char *buffer, size_t bufferSize)
 {
     FILE *file = fopen(path.c_str(), "rb");
@@ -398,32 +681,55 @@ static bool ReadTrimmedTextFile(const std::filesystem::path &path, char *buffer,
     return bytesRead > 0;
 }
 
-// Optional: if a "tu_debug.txt" file is present, its (trimmed) contents are used as the
-// TU_DEBUG environment variable value, letting Turnip debug/workaround options (e.g.
-// "noubwc", "nolrz") be tried without rebuilding the APK. The copy in the external
-// driver_import/ folder (editable over MTP/file managers without root) takes priority over
-// the internal one, so testers can flip options themselves. Note that "flushall" is the
-// gate that activates the patched WAIT_FOR_ME mask (see the patcher constants above), so
-// it should stay in the list when experimenting, e.g. "flushall,nolrz". See
+// Select a deterministic TU_DEBUG default from the restart-required Render Mode option.
+// Auto and GMEM both leave sysmem disabled; GMEM is explicit while Auto leaves room for a
+// future device policy. An external driver_import/tu_debug.txt (editable over MTP/file
+// managers without root) remains the sole diagnostic override and is never rewritten here.
+// "flushall" is Mesa's expensive full-flush diagnostic. See
 // https://docs.mesa3d.org/drivers/freedreno.html for the full list of TU_DEBUG options.
-static void ApplyTuDebugOverride(const std::string &turnipDir)
+static void ApplyRenderMode(EAndroidRenderMode renderMode, bool allowDiagnosticOverride)
 {
     char buffer[256]{};
-    std::filesystem::path source;
+
+    const char *modeName;
+    const char *defaultTuDebug;
+    switch (renderMode)
+    {
+        case EAndroidRenderMode::GMEM:
+            modeName = "GMEM";
+            defaultTuDebug = "none";
+            break;
+
+        case EAndroidRenderMode::Sysmem:
+            modeName = "Sysmem";
+            defaultTuDebug = "sysmem";
+            break;
+
+        case EAndroidRenderMode::Auto:
+        default:
+            modeName = "Auto";
+            defaultTuDebug = "none";
+            break;
+    }
+
+    setenv("TU_DEBUG", defaultTuDebug, 1);
+    LOGF("Android render mode: {} (default TU_DEBUG=\"{}\").", modeName, defaultTuDebug);
+
+    if (!allowDiagnosticOverride)
+    {
+        LOG("Vulkan boot recovery: external TU_DEBUG override is disabled for the safe fallback startup.");
+        return;
+    }
 
     const std::filesystem::path &externalDir = os::android::GetExternalFilesDir();
     std::filesystem::path externalPath = externalDir / "driver_import" / "tu_debug.txt";
-    std::filesystem::path internalPath = std::filesystem::path(turnipDir) / "tu_debug.txt";
 
-    if (!externalDir.empty() && ReadTrimmedTextFile(externalPath, buffer, sizeof(buffer)))
-        source = externalPath;
-    else if (ReadTrimmedTextFile(internalPath, buffer, sizeof(buffer)))
-        source = internalPath;
-    else
+    if (externalDir.empty() || !ReadTrimmedTextFile(externalPath, buffer, sizeof(buffer)))
         return;
 
     setenv("TU_DEBUG", buffer, 1);
-    LOGF("Applied TU_DEBUG override from {}: \"{}\"", source.string(), buffer);
+    LOGF("Applied diagnostic TU_DEBUG override from {}: \"{}\" (overrides Render Mode {}).",
+        externalPath.string(), buffer, modeName);
 }
 
 // Optional: if a "vk_layer_settings.txt" file is pushed alongside the driver, it's pointed to via
@@ -510,6 +816,18 @@ void *AndroidGetCustomVulkanLoader()
     // on the stock driver path where this function returns nullptr below).
     ApplyGfxreconstructCapture();
 
+    PrepareVulkanStartup();
+
+    // Recovery bypasses custom-driver provisioning/import processing as well as dlopen. This
+    // keeps the one-time fallback limited to the platform loader and deterministic Auto mode.
+    if (g_forceSafeVulkanFallback)
+    {
+        ApplyRenderMode(EAndroidRenderMode::Auto, false);
+        LOGF_WARNING("Android Vulkan driver mode: System (boot recovery override; configured mode remains {}).",
+            VulkanDriverName(Config::VulkanDriver.Value));
+        return nullptr;
+    }
+
     std::string turnipDir = GetTurnipDir();
     if (turnipDir.empty())
     {
@@ -519,15 +837,55 @@ void *AndroidGetCustomVulkanLoader()
 
     EnsureVulkanDriverInstalled(turnipDir);
 
-    std::string driverName = GetCustomDriverName(turnipDir);
+    std::string driverName;
+    switch (g_runtimeVulkanDriver)
+    {
+        case EAndroidVulkanDriver::System:
+            LOG("Android Vulkan driver mode: System.");
+            return nullptr;
+
+        case EAndroidVulkanDriver::Bundled:
+            driverName = BUNDLED_DRIVER_NAME;
+            LOG("Android Vulkan driver mode: Bundled.");
+            break;
+
+        case EAndroidVulkanDriver::Imported:
+            driverName = GetImportedDriverName(turnipDir);
+            LOG("Android Vulkan driver mode: Imported.");
+            break;
+
+        case EAndroidVulkanDriver::Auto:
+        default:
+            // Preserve the pre-UI behavior: a successfully imported driver remains
+            // selected; fresh installs use the bundled asset.
+            driverName = GetCustomDriverName(turnipDir);
+            LOG("Android Vulkan driver mode: Auto.");
+            break;
+    }
+
+    if (!IsSafeDriverFileName(driverName))
+    {
+        LOGF_ERROR("Invalid or unavailable Vulkan driver selection: \"{}\". Falling back to the system driver.", driverName);
+        return nullptr;
+    }
 
     struct stat buf {};
     std::string driverPath = turnipDir + driverName;
     if (stat(driverPath.c_str(), &buf) != 0)
     {
-        // No bundled driver in the APK and nothing installed manually - fall back to the
-        // stock system driver.
-        return nullptr;
+        // Auto can recover from a removed imported driver without making the app
+        // unbootable. Explicit Imported remains explicit and falls back to System.
+        if (g_runtimeVulkanDriver == EAndroidVulkanDriver::Auto && driverName != BUNDLED_DRIVER_NAME)
+        {
+            driverName = BUNDLED_DRIVER_NAME;
+            driverPath = turnipDir + driverName;
+        }
+
+        if (stat(driverPath.c_str(), &buf) != 0)
+        {
+            LOGF_ERROR("Selected Vulkan driver is missing: {}. Falling back to the system driver.", driverPath);
+            return nullptr;
+        }
     }
 
     std::string nativeLibraryDir = GetNativeLibraryDir();
@@ -537,7 +895,13 @@ void *AndroidGetCustomVulkanLoader()
         return nullptr;
     }
 
-    ApplyTuDebugOverride(turnipDir);
+    if (!ArmCustomVulkanStartup())
+    {
+        ApplyRenderMode(EAndroidRenderMode::Auto, false);
+        return nullptr;
+    }
+
+    ApplyRenderMode(g_runtimeRenderMode, true);
     ApplyLayerSettingsOverride(turnipDir);
 
     void *libVulkan = adrenotools_open_libvulkan(
@@ -565,4 +929,26 @@ void *AndroidGetCustomVulkanLoader()
 
     LOGF("Successfully loaded custom Vulkan driver ({}) via libadrenotools.", driverName);
     return getInstanceProcAddr;
+}
+
+void AndroidMarkVulkanStartupSuccessful()
+{
+    if (!g_vulkanStartupPrepared || g_vulkanStartupSuccessReported)
+        return;
+
+    if (!g_vulkanStartupStateActive)
+    {
+        g_vulkanStartupSuccessReported = true;
+        return;
+    }
+
+    if (!RemoveVulkanStartupState())
+    {
+        LOG_ERROR("Vulkan boot recovery: device + swapchain are usable, but the startup marker could not be cleared.");
+        return;
+    }
+
+    g_vulkanStartupStateActive = false;
+    g_vulkanStartupSuccessReported = true;
+    LOG("Vulkan boot recovery: device + usable swapchain created successfully; startup marker cleared.");
 }

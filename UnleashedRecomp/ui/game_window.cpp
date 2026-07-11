@@ -162,6 +162,16 @@ void GameWindow::Init(const char* sdlVideoDriver)
 #endif
 
 #ifdef __ANDROID__
+    // Non-blocking pump: with "1", SDL_PumpEvents parks the calling thread inside SDL's
+    // resume semaphore while paused. Its pause/resume credit handshake misfires in this
+    // app (multiple threads pump, nobody drains the event queue), which delivered spurious
+    // resumes 40 ms after backgrounding. The game freeze is our own instead: the tick in
+    // app.cpp blocks while the native window is gone (surface state is the authority).
+    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
+    // Audio pausing rides the same misfiring handshake; our Unleashed_AppSetPaused
+    // (sdl2_driver.cpp) pauses/resumes audio deterministically instead.
+    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE_PAUSEAUDIO, "0");
+
     // Without this, SDL_androidwindow.c's Android_JNI_SetOrientation() call (fired during
     // SDL_CreateWindow() below) passes an empty orientation hint. Since the window is also
     // created with SDL_WINDOW_RESIZABLE (see GetWindowFlags()), SDLActivity.setOrientationBis()
@@ -240,6 +250,19 @@ void GameWindow::Init(const char* sdlVideoDriver)
 
     SDL_ShowWindow(s_pWindow);
 }
+
+#ifdef __ANDROID__
+plume::RenderWindow GameWindow::GetAndroidNativeWindow()
+{
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+
+    if (s_pWindow == nullptr || SDL_GetWindowWMInfo(s_pWindow, &info) != SDL_TRUE)
+        return nullptr;
+
+    return info.info.android.window;
+}
+#endif
 
 void GameWindow::Update()
 {

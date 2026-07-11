@@ -70,6 +70,28 @@ void aaudio_errorCallback(AAudioStream *stream, void *userData, aaudio_result_t 
 
 #define LIB_AAUDIO_SO "libaaudio.so"
 
+static void ConfigureOutputBuffer(AAudioStream *stream, int appChunkFrames, const char *reason)
+{
+    int32_t burst;
+    int32_t target;
+    aaudio_result_t setResult;
+
+    burst = ctx.AAudioStream_getFramesPerBurst(stream);
+    // One hardware burst is sufficient because the game's FIFO already absorbs producer
+    // jitter. A second Bluetooth burst adds about 160 ms on the tested route with no
+    // benefit once the producer and platform consumer are decoupled.
+    target = appChunkFrames;
+    if (burst > 0 && target < burst) {
+        target = burst;
+    }
+
+    setResult = ctx.AAudioStream_setBufferSizeInFrames(stream, target);
+    SDL_Log("AAudio buffer (%s): burst %d, chunk %d, requested %d, accepted %d, active %d, capacity %d",
+            reason, burst, appChunkFrames, target, (int)setResult,
+            ctx.AAudioStream_getBufferSizeInFrames(stream),
+            ctx.AAudioStream_getBufferCapacityInFrames(stream));
+}
+
 static int aaudio_OpenDevice(_THIS, const char *devname)
 {
     struct SDL_PrivateAudioData *private;
@@ -109,6 +131,11 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
     {
         const aaudio_direction_t direction = (iscapture ? AAUDIO_DIRECTION_INPUT : AAUDIO_DIRECTION_OUTPUT);
         ctx.AAudioStreamBuilder_setDirection(ctx.builder, direction);
+    }
+    if (!iscapture) {
+        // Lets Android select the routing and latency policy intended for interactive games,
+        // including Bluetooth routes, without forcing MMAP or low-latency mode.
+        ctx.AAudioStreamBuilder_setUsage(ctx.builder, AAUDIO_USAGE_GAME);
     }
     {
         const aaudio_format_t format = (this->spec.format == AUDIO_S16SYS) ? AAUDIO_FORMAT_PCM_I16 : AAUDIO_FORMAT_PCM_FLOAT;
@@ -159,19 +186,7 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
 
     private->frame_size = this->spec.channels * (SDL_AUDIO_BITSIZE(this->spec.format) / 8);
 
-    /* UnleashedRecomp: cap the working buffer size. Deep-buffer routes (Bluetooth A2DP)
-       otherwise get huge default buffers that blocking writes keep full, adding up to a
-       second of latency. Three hardware bursts, but no less than two app-side chunks. */
-    {
-        int32_t burst = ctx.AAudioStream_getFramesPerBurst(private->stream);
-        int32_t target = (burst > 0) ? burst * 3 : 0;
-        int32_t twoChunks = (int32_t)this->spec.samples * 2;
-        if (target < twoChunks) {
-            target = twoChunks;
-        }
-        res = ctx.AAudioStream_setBufferSizeInFrames(private->stream, target);
-        LOGI("AAudio setBufferSizeInFrames(%d) burst %d result %d", target, burst, (int)res);
-    }
+    ConfigureOutputBuffer(private->stream, (int)this->spec.samples, "open");
 
     res = ctx.AAudioStream_requestStart(private->stream);
     if (res != AAUDIO_OK) {
@@ -249,6 +264,9 @@ static int RebuildAAudioStream(SDL_AudioDevice *device)
         const aaudio_direction_t direction = (iscapture ? AAUDIO_DIRECTION_INPUT : AAUDIO_DIRECTION_OUTPUT);
         ctx.AAudioStreamBuilder_setDirection(ctx.builder, direction);
     }
+    if (!iscapture) {
+        ctx.AAudioStreamBuilder_setUsage(ctx.builder, AAUDIO_USAGE_GAME);
+    }
     {
         const aaudio_format_t format = (device->spec.format == AUDIO_S16SYS) ? AAUDIO_FORMAT_PCM_I16 : AAUDIO_FORMAT_PCM_FLOAT;
         ctx.AAudioStreamBuilder_setFormat(ctx.builder, format);
@@ -288,17 +306,7 @@ static int RebuildAAudioStream(SDL_AudioDevice *device)
         }
     }
 
-    /* UnleashedRecomp: see the matching buffer-size cap in the open path. */
-    {
-        int32_t burst = ctx.AAudioStream_getFramesPerBurst(hidden->stream);
-        int32_t target = (burst > 0) ? burst * 3 : 0;
-        int32_t twoChunks = (int32_t)device->spec.samples * 2;
-        if (target < twoChunks) {
-            target = twoChunks;
-        }
-        res = ctx.AAudioStream_setBufferSizeInFrames(hidden->stream, target);
-        LOGI("AAudio setBufferSizeInFrames(%d) burst %d result %d (reopen)", target, burst, (int)res);
-    }
+    ConfigureOutputBuffer(hidden->stream, (int)device->spec.samples, "reopen");
 
     res = ctx.AAudioStream_requestStart(hidden->stream);
     if (res != AAUDIO_OK) {

@@ -1,3 +1,20 @@
 <resources>
     <string name="app_name">UnleashedRecomp</string>
+    <string name="documents_game_title">Unleashed Recomp game files</string>
+    <string name="documents_game_summary">Active game, mods, configuration and saves</string>
+    <string name="documents_transfer_title">Unleashed Recomp transfers</string>
+    <string name="documents_transfer_summary">Mods, driver imports, logs and diagnostic captures</string>
+    <string name="mod_manager_launcher_name">Unleashed Mods</string>
+    <string name="mod_manager_title">Unleashed Mods</string>
+    <string name="mod_manager_hint">Copy each mod folder into the mods directory, refresh this list, enable mods and arrange their priority. Save writes the standard CPKREDIR database; restart the game to apply changes.</string>
+    <string name="mod_manager_open_files">Open Files</string>
+    <string name="mod_manager_refresh">Refresh</string>
+    <string name="mod_manager_save">Save mod list</string>
+    <string name="mod_manager_empty">No compatible mod.ini files found. Use Open mod folder, create mods/, then copy HMM or UMM mods into it.</string>
+    <string name="mod_manager_found">Found %1$d compatible mods.</string>
+    <string name="mod_manager_saved">Saved %1$d enabled mods in priority order.</string>
+    <string name="mod_manager_restart">Mod changes will apply after the game is restarted.</string>
+    <string name="mod_manager_error_directory">Cannot create configuration directory: %1$s</string>
+    <string name="mod_manager_error_save">Cannot save the mod database: %1$s</string>
+    <string name="mod_manager_error_files">Android Files could not be opened.</string>
 </resources>

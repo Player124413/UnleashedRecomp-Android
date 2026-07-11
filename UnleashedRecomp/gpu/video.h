@@ -20,6 +20,7 @@ struct Video
 
     static bool CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry);
     static void WaitOnSwapChain();
+    static void OnAndroidResume();  // called on native resume to force swapchain recreate (fixes black screen)
     static void Present();
     static void StartPipelinePrecompilation();
     static void WaitForGPU();

@@ -10,6 +10,10 @@
 #include <user/config.h>
 #include <user/paths.h>
 #include <user/registry.h>
+#include <os/logger.h>
+
+#include <chrono>
+#include <thread>
 
 void App::Restart(std::vector<std::string> restartArgs)
 {
@@ -48,6 +52,32 @@ static std::thread::id g_mainThreadId = std::this_thread::get_id();
 PPC_FUNC_IMPL(__imp__sub_822C1130);
 PPC_FUNC(sub_822C1130)
 {
+#ifdef __ANDROID__
+    // Freeze the game tick while backgrounded. The flag is driven by the native-window
+    // watcher thread in sdl2_driver.cpp (AndroidWindowWatcherThread): the OS destroys
+    // the ANativeWindow on background and recreates it on restore - the only lifecycle
+    // signal that proved reliable here. SDL's pause/resume events are informational only.
+    // NOTE: Audio is paused/resumed by the same watcher via Unleashed_AppSetPaused.
+    const bool isMainThread = std::this_thread::get_id() == g_mainThreadId;
+    bool wasPaused = App::s_androidPaused.load(std::memory_order_acquire);
+
+    while (App::s_androidPaused.load(std::memory_order_acquire))
+    {
+        // Non-blocking on Android (SDL_HINT_ANDROID_BLOCK_ON_PAUSE=0), so SDL cannot
+        // park this thread inside its resume semaphore.
+        if (isMainThread)
+            SDL_PumpEvents();
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    if (isMainThread && wasPaused)
+    {
+        os::logger::Log("game tick resumed from background - triggering video swapchain check", os::logger::ELogType::Utility, "android");
+        Video::OnAndroidResume();  // will invalidate/recreate swapchain if needed
+    }
+#endif
+
     Video::WaitOnSwapChain();
 
     // Correct small delta time errors.
@@ -69,7 +99,8 @@ PPC_FUNC(sub_822C1130)
     if (std::this_thread::get_id() == g_mainThreadId)
     {
         SDL_PumpEvents();
-        SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+        // Do not SDL_FlushEvents here: it discards SDL_APP_DIDENTERBACKGROUND before SDL's
+        // Android pause machinery can finish, and the game loop would keep running in background.
         GameWindow::Update();
     }
 

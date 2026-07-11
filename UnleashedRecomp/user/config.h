@@ -59,6 +59,13 @@ enum class EControllerIcons : uint32_t
     PlayStation
 };
 
+enum class EAndroidTouchControlsPolicy : uint32_t
+{
+    Auto,
+    AlwaysOn,
+    Off
+};
+
 enum class EChannelConfiguration : uint32_t
 {
     Stereo,
@@ -72,6 +79,21 @@ enum class EGraphicsAPI : uint32_t
     D3D12,
 #endif
     Vulkan
+};
+
+enum class EAndroidVulkanDriver : uint32_t
+{
+    Auto,
+    System,
+    Bundled,
+    Imported
+};
+
+enum class EAndroidRenderMode : uint32_t
+{
+    Auto,
+    GMEM,
+    Sysmem
 };
 
 enum class EWindowState : uint32_t

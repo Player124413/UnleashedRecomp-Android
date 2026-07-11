@@ -370,6 +370,25 @@ CONFIG_DEFINE_LOCALE(AllowBackgroundInput)
     { ELanguage::Italian,  { "Input con la finestra inattiva", "Attiva/disattiva i tasti del controller mentre la finestra è inattiva." } }
 };
 
+// Android-only option. Other languages deliberately fall back to English until the
+// Android port strings are translated together with the rest of its platform UI.
+CONFIG_DEFINE_LOCALE(TouchControls)
+{
+    { ELanguage::English, { "Touch Controls", "Choose when the on-screen controls are shown. Changes apply immediately." } }
+};
+
+CONFIG_DEFINE_ENUM_LOCALE(EAndroidTouchControlsPolicy)
+{
+    {
+        ELanguage::English,
+        {
+            { EAndroidTouchControlsPolicy::Auto,     { "AUTO", "Auto: show touch controls until a physical controller becomes active; touching the screen shows them again." } },
+            { EAndroidTouchControlsPolicy::AlwaysOn, { "ALWAYS ON", "Always On: keep touch controls visible while allowing physical controller and keyboard input." } },
+            { EAndroidTouchControlsPolicy::Off,      { "OFF", "Off: hide touch controls and use physical controller or keyboard input." } }
+        }
+    }
+};
+
 // Japanese Notes: This localization should include furigana.
 CONFIG_DEFINE_LOCALE(MasterVolume)
 {
@@ -1009,6 +1028,43 @@ CONFIG_DEFINE_ENUM_LOCALE(EUIAlignmentMode)
         {
             { EUIAlignmentMode::Edge,    { "BORDI", "Bordi: l'interfaccia si allineerà con i bordi dello schermo." } },
             { EUIAlignmentMode::Centre,  { "CENTRO", "Centro: l'interfaccia si allineerà con il centro dello schermo." } }
+        }
+    }
+};
+
+// Android-only option. Other languages deliberately fall back to English until the
+// Android port strings are translated together with the rest of its platform UI.
+CONFIG_DEFINE_LOCALE(VulkanDriver)
+{
+    { ELanguage::English, { "Vulkan Driver", "Select the Android Vulkan driver. Changes take effect after restarting the game." } }
+};
+
+CONFIG_DEFINE_ENUM_LOCALE(EAndroidVulkanDriver)
+{
+    {
+        ELanguage::English,
+        {
+            { EAndroidVulkanDriver::Auto,     { "AUTO", "Auto: preserve a valid imported selection; otherwise use the bundled Turnip driver." } },
+            { EAndroidVulkanDriver::System,   { "SYSTEM", "System: use the Vulkan driver supplied by the device." } },
+            { EAndroidVulkanDriver::Bundled,  { "BUNDLED", "Bundled: use the Turnip driver shipped with this APK." } },
+            { EAndroidVulkanDriver::Imported, { "IMPORTED", "Imported: use the most recently installed .so from the driver_import folder." } }
+        }
+    }
+};
+
+CONFIG_DEFINE_LOCALE(RenderMode)
+{
+    { ELanguage::English, { "Render Mode", "Select how Turnip renders tiles. Changes take effect after restarting the game." } }
+};
+
+CONFIG_DEFINE_ENUM_LOCALE(EAndroidRenderMode)
+{
+    {
+        ELanguage::English,
+        {
+            { EAndroidRenderMode::Auto,   { "AUTO", "Auto: use the normal Turnip rendering mode without forcing system memory." } },
+            { EAndroidRenderMode::GMEM,   { "GMEM", "GMEM: render tiles in fast on-chip graphics memory." } },
+            { EAndroidRenderMode::Sysmem, { "SYSMEM", "Sysmem: render directly in system memory; this can improve performance in some scenes." } }
         }
     }
 };

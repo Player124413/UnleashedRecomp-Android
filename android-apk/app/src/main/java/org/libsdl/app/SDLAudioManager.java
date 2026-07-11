@@ -249,27 +249,36 @@ public class SDLAudioManager {
             results[2] = mAudioRecord.getChannelCount();
 
         } else {
-            if (mAudioTrack == null) {
-                mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, desiredFrames * frameSize, AudioTrack.MODE_STREAM);
-
-                // Instantiating AudioTrack can "succeed" without an exception and the track may still be invalid
-                // Ref: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/master/media/java/android/media/AudioTrack.java
-                // Ref: http://developer.android.com/reference/android/media/AudioTrack.html#getState()
-                if (mAudioTrack.getState() != AudioTrack.STATE_INITIALIZED) {
-                    /* Try again, with safer values */
-
-                    Log.e(TAG, "Failed during initialization of Audio Track");
-                    mAudioTrack.release();
-                    mAudioTrack = null;
-                    return null;
-                }
-
-                if (Build.VERSION.SDK_INT >= 24 /* Android 7.0 (N) */ && deviceId != 0) {
-                    mAudioTrack.setPreferredDevice(getInputAudioDeviceInfo(deviceId));
-                }
-
-                mAudioTrack.play();
+            // Always recreate on open: SDL hotplug close/open must not reuse a stale AudioTrack.
+            if (mAudioTrack != null) {
+                mAudioTrack.stop();
+                mAudioTrack.release();
+                mAudioTrack = null;
             }
+
+            mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, desiredFrames * frameSize, AudioTrack.MODE_STREAM);
+
+            // Instantiating AudioTrack can "succeed" without an exception and the track may still be invalid
+            // Ref: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/master/media/java/android/media/AudioTrack.java
+            // Ref: http://developer.android.com/reference/android/media/AudioTrack.html#getState()
+            if (mAudioTrack.getState() != AudioTrack.STATE_INITIALIZED) {
+                Log.e(TAG, "Failed during initialization of Audio Track");
+                mAudioTrack.release();
+                mAudioTrack = null;
+                return null;
+            }
+
+            if (Build.VERSION.SDK_INT >= 24 /* Android 7.0 (N) */ && deviceId != 0) {
+                AudioDeviceInfo preferred = getOutputAudioDeviceInfo(deviceId);
+                if (preferred != null) {
+                    mAudioTrack.setPreferredDevice(preferred);
+                    Log.i(TAG, "Playback routed to output device id=" + deviceId + " type=" + preferred.getType());
+                } else {
+                    Log.w(TAG, "Playback device id=" + deviceId + " not found in output list; using system default");
+                }
+            }
+
+            mAudioTrack.play();
 
             results[0] = mAudioTrack.getSampleRate();
             results[1] = mAudioTrack.getAudioFormat();
@@ -349,6 +358,75 @@ public class SDLAudioManager {
      */
     public static int[] audioOpen(int sampleRate, int audioFormat, int desiredChannels, int desiredFrames, int deviceId) {
         return open(false, sampleRate, audioFormat, desiredChannels, desiredFrames, deviceId);
+    }
+
+    /**
+     * Hotplug route change without recreating AudioTrack (called from native on device ADD).
+     */
+    public static void audioFlushOutput() {
+        if (mAudioTrack == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 23 /* Android 6.0 (M) */) {
+            mAudioTrack.flush();
+        }
+    }
+
+    public static void audioPauseOutput() {
+        if (mAudioTrack == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 23 /* Android 6.0 (M) */) {
+            mAudioTrack.pause();
+            mAudioTrack.flush();
+        } else {
+            mAudioTrack.stop();
+        }
+    }
+
+    public static void audioResumeOutput() {
+        if (mAudioTrack == null) {
+            return;
+        }
+        mAudioTrack.play();
+    }
+
+    public static boolean audioRouteOutput(int deviceId) {
+        if (mAudioTrack == null) {
+            Log.w(TAG, "audioRouteOutput: no active AudioTrack (deviceId=" + deviceId + ")");
+            return false;
+        }
+
+        if (Build.VERSION.SDK_INT >= 24 /* Android 7.0 (N) */ && deviceId != 0) {
+            AudioDeviceInfo preferred = getOutputAudioDeviceInfo(deviceId);
+            if (preferred == null) {
+                Log.w(TAG, "audioRouteOutput: device id=" + deviceId + " not found in output list (mAudioTrack active, list may lag)");
+                // Dump available for debug (expensive, but helps research)
+                AudioManager am = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+                for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                    Log.d(TAG, "  available output id=" + d.getId() + " type=" + d.getType());
+                }
+                return false;
+            }
+
+            if (Build.VERSION.SDK_INT >= 23 /* Android 6.0 (M) */) {
+                mAudioTrack.pause();
+                mAudioTrack.flush();
+            }
+
+            boolean routed = mAudioTrack.setPreferredDevice(preferred);
+
+            if (Build.VERSION.SDK_INT >= 23 /* Android 6.0 (M) */) {
+                mAudioTrack.flush();
+            }
+            mAudioTrack.play();
+
+            Log.i(TAG, "audioRouteOutput: id=" + deviceId + " type=" + preferred.getType() + " ok=" + routed);
+            return routed;
+        }
+
+        Log.w(TAG, "audioRouteOutput: skipped (pre-N or id=0)");
+        return false;
     }
 
     /**

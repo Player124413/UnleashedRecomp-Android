@@ -15,6 +15,10 @@ void os::logger::Heartbeat()
 {
 }
 
+void os::logger::SetWatchdogSuspended(bool suspended)
+{
+}
+
 void os::logger::Log(const std::string_view str, ELogType type, const char* func)
 {
     if (!os::process::g_consoleVisible)

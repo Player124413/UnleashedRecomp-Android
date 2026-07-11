@@ -49,4 +49,11 @@ public:
     static bool IsPositionValid();
     static void Init(const char* sdlVideoDriver = nullptr);
     static void Update();
+
+#ifdef __ANDROID__
+    // Android replaces the ANativeWindow across background/foreground. Returns the window
+    // SDL currently holds (nullptr while backgrounded), unlike s_renderWindow which keeps
+    // the pointer captured at creation time.
+    static plume::RenderWindow GetAndroidNativeWindow();
+#endif
 };

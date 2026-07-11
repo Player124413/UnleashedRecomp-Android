@@ -5,46 +5,98 @@
 #include "game_window.h"
 #include <gpu/video.h>
 #include <sdl_listener.h>
+#include <user/config.h>
+#include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <unordered_set>
+
+#ifdef __ANDROID__
+#include "os/android/storage_android.h"
+#endif
 
 // ---------------------------------------------------------------------------
-// Layout constants.
+// On-screen touch controls with a drag-to-arrange layout editor.
+//
+// Every control (stick, A/B/X/Y, LB/RB, LT/RT, Start/Back) has its own editable
+// position. Tapping the on-screen EDIT button enters an editor where each control
+// can be dragged, the whole set resized, or reset to defaults. The layout is saved
+// to <data>/touch_layout.ini and reloaded on the next launch.
 //
 // Positions are fractions of the viewport; X of the viewport width, Y of the
-// viewport height. Sizes are fractions of the viewport height so the layout
-// keeps its proportions across resolutions/aspect ratios.
+// viewport height. Sizes are fractions of the viewport height so the layout keeps
+// its proportions across resolutions/aspect ratios.
 // ---------------------------------------------------------------------------
-
-// Left analog stick.
-static constexpr float STICK_CX      = 0.135f; // of width
-static constexpr float STICK_CY      = 0.760f; // of height
-static constexpr float STICK_BASE_R  = 0.150f; // of height
-static constexpr float STICK_THUMB_R = 0.070f; // of height
-static constexpr float STICK_ZONE_R  = 0.210f; // of height (hit radius)
-
-// Right face-button cluster (Xbox diamond: A bottom, B right, X left, Y top).
-static constexpr float FACE_CX       = 0.865f; // of width
-static constexpr float FACE_CY       = 0.760f; // of height
-static constexpr float FACE_BTN_R    = 0.058f; // of height
-static constexpr float FACE_SPREAD   = 0.108f; // of height (centre -> button)
-
-// Shoulders (top corners) and triggers (just below them).
-static constexpr float SHOULDER_HW   = 0.075f; // half-width, of height
-static constexpr float SHOULDER_HH   = 0.036f; // half-height, of height
-static constexpr float SHOULDER_LX   = 0.075f; // of width
-static constexpr float SHOULDER_RX   = 0.925f; // of width
-static constexpr float SHOULDER_Y    = 0.090f; // of height
-static constexpr float TRIGGER_Y     = 0.185f; // of height
-
-// Start / Back, centred along the top.
-static constexpr float MENU_Y        = 0.070f; // of height
-static constexpr float MENU_DX       = 0.055f; // of width (centre -> button)
-static constexpr float MENU_HW       = 0.032f; // half-width, of height
-static constexpr float MENU_HH       = 0.032f; // half-height, of height
 
 namespace
 {
+    // Logical controls. Order is load-bearing: it must match kDefault, kIcon and
+    // the save-file keys below.
+    enum
+    {
+        TC_STICK = 0,
+        TC_A, TC_B, TC_X, TC_Y,
+        TC_LB, TC_RB,
+        TC_LT, TC_RT,
+        TC_START, TC_BACK,
+        TC_COUNT
+    };
+
+    // Base sizes (fractions of viewport height), multiplied by the global scale.
+    constexpr float STICK_BASE_R  = 0.150f;
+    constexpr float STICK_THUMB_R = 0.070f;
+    constexpr float STICK_ZONE_R  = 0.210f;
+    constexpr float FACE_BTN_R    = 0.058f;
+    constexpr float SHOULDER_HW   = 0.075f;
+    constexpr float SHOULDER_HH   = 0.036f;
+    constexpr float MENU_HW       = 0.032f;
+    constexpr float MENU_HH       = 0.032f;
+
+    constexpr float SCALE_MIN = 0.60f;
+    constexpr float SCALE_MAX = 1.60f;
+
+    struct Layout
+    {
+        float x[TC_COUNT];
+        float y[TC_COUNT];
+        float scale;
+    };
+
+    // Default layout. X-offsets that were expressed in height units in the old
+    // fixed layout are baked here at the reference 2400x1080 aspect.
+    const Layout kDefault =
+    {
+        //  stick    A       B       X       Y      LB      RB      LT      RT     Start   Back
+        {  0.135f, 0.865f, 0.914f, 0.816f, 0.865f, 0.075f, 0.925f, 0.075f, 0.925f, 0.555f, 0.445f },
+        {  0.760f, 0.868f, 0.760f, 0.760f, 0.652f, 0.090f, 0.090f, 0.185f, 0.185f, 0.070f, 0.070f },
+        1.0f
+    };
+
+    Layout g_layout = kDefault;
+
+    const EButtonIcon kIcon[TC_COUNT] =
+    {
+        EButtonIcon::A, // stick (unused)
+        EButtonIcon::A, EButtonIcon::B, EButtonIcon::X, EButtonIcon::Y,
+        EButtonIcon::LB, EButtonIcon::RB,
+        EButtonIcon::LT, EButtonIcon::RT,
+        EButtonIcon::Start, EButtonIcon::Back
+    };
+
+    const char* const kKey[TC_COUNT] =
+    {
+        "stick", "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "back"
+    };
+
+    // ---- Finger tracking (SDL touch thread) --------------------------------
+
     struct Finger
     {
         SDL_FingerID id;
@@ -55,14 +107,114 @@ namespace
     std::mutex g_mutex;
     std::vector<Finger> g_fingers;
 
-    std::atomic<bool> g_visible{ true };
+    std::atomic<bool> g_autoVisible{ true };
     XAMINPUT_GAMEPAD g_state{};
 
-    // The finger currently driving the analog stick (-1 = none). It captures the
-    // stick on touch-down inside the zone and keeps it until released, so the
-    // thumb keeps following even after the finger leaves the zone. Only touched
-    // from Draw() (render thread), so it needs no synchronisation.
+    // Finger driving the analog stick (-1 = none). Render-thread only.
     SDL_FingerID g_stickFingerId = (SDL_FingerID)-1;
+
+    // ---- Editor state (render thread only) ---------------------------------
+
+    bool g_edit = false;
+    int  g_dragElem = -1;                       // control being dragged (-1 = none)
+    SDL_FingerID g_dragFinger = (SDL_FingerID)-1;
+    float g_grabX = 0.0f, g_grabY = 0.0f;       // element-centre minus finger, in fractions
+    std::vector<SDL_FingerID> g_prevIds;        // finger ids present last frame (for fresh-down detection)
+    bool g_layoutLoaded = false;
+
+    struct FingerPt { SDL_FingerID id; ImVec2 pos; };
+
+    struct ElemRect { ImVec2 c; float hw; float hh; bool round; };
+
+    ElemRect ElemRectOf(int i, float vw, float vh)
+    {
+        ImVec2 c(g_layout.x[i] * vw, g_layout.y[i] * vh);
+        const float s = g_layout.scale;
+        if (i == TC_STICK)                { const float r = STICK_BASE_R * vh * s; return { c, r, r, true }; }
+        if (i >= TC_A && i <= TC_Y)       { const float r = FACE_BTN_R  * vh * s; return { c, r, r, true }; }
+        if (i >= TC_LB && i <= TC_RT)     { return { c, SHOULDER_HW * vh * s, SHOULDER_HH * vh * s, false }; }
+        return { c, MENU_HW * vh * s, MENU_HH * vh * s, false }; // Start / Back
+    }
+
+    // ---- Persistence -------------------------------------------------------
+
+    std::filesystem::path LayoutFilePath()
+    {
+#ifdef __ANDROID__
+        const std::filesystem::path& root = os::android::GetDataRoot();
+        if (!root.empty())
+            return root / "touch_layout.ini";
+#endif
+        return {};
+    }
+
+    void SaveLayout()
+    {
+        const std::filesystem::path path = LayoutFilePath();
+        if (path.empty())
+            return;
+
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (!f)
+            return;
+
+        f << "version=1\n";
+        f << "scale=" << g_layout.scale << "\n";
+        for (int i = 0; i < TC_COUNT; ++i)
+            f << kKey[i] << "=" << g_layout.x[i] << "," << g_layout.y[i] << "\n";
+    }
+
+    void LoadLayout()
+    {
+        g_layout = kDefault;
+        g_layoutLoaded = true;
+
+        const std::filesystem::path path = LayoutFilePath();
+        if (path.empty())
+            return;
+
+        std::ifstream f(path, std::ios::binary);
+        if (!f)
+            return;
+
+        std::string line;
+        while (std::getline(f, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos)
+                continue;
+
+            const std::string key = line.substr(0, eq);
+            const std::string val = line.substr(eq + 1);
+
+            if (key == "scale")
+            {
+                g_layout.scale = std::clamp((float)atof(val.c_str()), SCALE_MIN, SCALE_MAX);
+                continue;
+            }
+
+            for (int i = 0; i < TC_COUNT; ++i)
+            {
+                if (key == kKey[i])
+                {
+                    const size_t comma = val.find(',');
+                    if (comma != std::string::npos)
+                    {
+                        const float x = (float)atof(val.substr(0, comma).c_str());
+                        const float y = (float)atof(val.substr(comma + 1).c_str());
+                        g_layout.x[i] = std::clamp(x, 0.0f, 1.0f);
+                        g_layout.y[i] = std::clamp(y, 0.0f, 1.0f);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // ---- Drawing helpers ---------------------------------------------------
 
     bool AnyFingerInCircle(const std::vector<ImVec2>& pts, ImVec2 c, float r)
     {
@@ -87,7 +239,6 @@ namespace
         return false;
     }
 
-    // Draws a button glyph from the shared controller atlas, preserving aspect.
     void DrawGlyph(ImDrawList* dl, ImVec2 c, float halfW, float halfH, EButtonIcon icon, int alpha)
     {
         auto ic = GetButtonIcon(icon);
@@ -112,7 +263,6 @@ namespace
     }
 
     // Wide button (shoulders/triggers/start/back): rounded backing + glyph.
-    // Returns whether it is currently pressed.
     bool DrawWideButton(ImDrawList* dl, const std::vector<ImVec2>& pts, ImVec2 c,
         float halfW, float halfH, float glyphHalfW, float glyphHalfH, EButtonIcon icon)
     {
@@ -123,6 +273,36 @@ namespace
         DrawGlyph(dl, c, glyphHalfW, glyphHalfH, icon, pressed ? 255 : 210);
 
         return pressed;
+    }
+
+    // Draw a control's static visual (no press detection) - used by the editor.
+    void DrawElemVisual(ImDrawList* dl, int i, const ElemRect& r)
+    {
+        if (i == TC_STICK)
+        {
+            dl->AddCircleFilled(r.c, r.hw, IM_COL32(0, 0, 0, 55), 48);
+            dl->AddCircle(r.c, r.hw, IM_COL32(255, 255, 255, 130), 48, 3.0f);
+            const float thumb = r.hw * (STICK_THUMB_R / STICK_BASE_R);
+            dl->AddCircleFilled(r.c, thumb, IM_COL32(255, 255, 255, 110), 32);
+            return;
+        }
+
+        if (i >= TC_A && i <= TC_Y)
+        {
+            dl->AddCircleFilled(r.c, r.hw * 1.25f, IM_COL32(0, 0, 0, 70), 32);
+            DrawGlyph(dl, r.c, r.hw, r.hw, kIcon[i], 210);
+            return;
+        }
+
+        dl->AddRectFilled({ r.c.x - r.hw, r.c.y - r.hh }, { r.c.x + r.hw, r.c.y + r.hh },
+            IM_COL32(0, 0, 0, 70), r.hh * 0.5f);
+
+        float gw, gh;
+        if (i == TC_LB || i == TC_RB)      { gw = r.hw * 0.75f; gh = r.hh * 0.85f; }
+        else if (i == TC_LT || i == TC_RT) { gw = r.hh * 0.95f; gh = r.hh * 0.95f; }
+        else                               { gw = r.hw;         gh = r.hh; } // Start / Back
+
+        DrawGlyph(dl, r.c, gw, gh, kIcon[i], 210);
     }
 }
 
@@ -183,12 +363,25 @@ g_sdlEventListenerForTouchControls;
 
 bool TouchControls::IsVisible()
 {
-    return g_visible.load(std::memory_order_relaxed);
+#ifdef __ANDROID__
+    switch (Config::TouchControls.Value)
+    {
+        case EAndroidTouchControlsPolicy::AlwaysOn:
+            return true;
+        case EAndroidTouchControlsPolicy::Off:
+            return false;
+        case EAndroidTouchControlsPolicy::Auto:
+        default:
+            break;
+    }
+#endif
+
+    return g_autoVisible.load(std::memory_order_relaxed);
 }
 
 void TouchControls::SetVisible(bool visible)
 {
-    g_visible.store(visible, std::memory_order_relaxed);
+    g_autoVisible.store(visible, std::memory_order_relaxed);
 }
 
 const XAMINPUT_GAMEPAD& TouchControls::GetGamepadState()
@@ -198,27 +391,33 @@ const XAMINPUT_GAMEPAD& TouchControls::GetGamepadState()
 
 void TouchControls::Init()
 {
-    // Nothing to load: the glyph atlas is owned by ButtonGuide, which is
-    // initialised before us. Kept for symmetry / future dedicated assets.
+    // The glyph atlas is owned by ButtonGuide (initialised before us). Load the
+    // saved on-screen layout, if any.
+    LoadLayout();
 }
 
 void TouchControls::Draw()
 {
-    if (!g_visible.load(std::memory_order_relaxed))
+    if (!IsVisible())
     {
         g_state = {};
         g_stickFingerId = (SDL_FingerID)-1;
+        g_dragElem = -1;
+        g_prevIds.clear();
         return;
     }
+
+    if (!g_layoutLoaded)
+        LoadLayout();
 
     const float vw = float(Video::s_viewportWidth);
     const float vh = float(Video::s_viewportHeight);
     if (vw <= 0.0f || vh <= 0.0f)
         return;
 
-    // Map normalised finger coordinates (over the window/swapchain) into the
-    // ImGui viewport space that the overlays draw in. The viewport is centred
-    // within the swapchain for some aspect-ratio settings.
+    // Map normalised finger coordinates (over the window/swapchain) into ImGui
+    // viewport space (the viewport is centred within the swapchain for some
+    // aspect-ratio settings).
     int pw = 0, ph = 0;
     GameWindow::GetSizeInPixels(&pw, &ph);
     const float sw = pw > 0 ? float(pw) : vw;
@@ -226,8 +425,6 @@ void TouchControls::Draw()
     const float offX = (sw - vw) * 0.5f;
     const float offY = (sh - vh) * 0.5f;
 
-    // Snapshot the active fingers (id + viewport-space position).
-    struct FingerPt { SDL_FingerID id; ImVec2 pos; };
     std::vector<FingerPt> fps;
     {
         std::lock_guard lock(g_mutex);
@@ -236,104 +433,307 @@ void TouchControls::Draw()
             fps.push_back({ f.id, { f.nx * sw - offX, f.ny * sh - offY } });
     }
 
-    XAMINPUT_GAMEPAD st{};
+    // Fresh finger-downs = ids present now but not last frame (one-shot taps).
+    std::unordered_set<SDL_FingerID> prevSet(g_prevIds.begin(), g_prevIds.end());
+    std::vector<FingerPt> fresh;
+    for (const auto& fp : fps)
+        if (!prevSet.count(fp.id))
+            fresh.push_back(fp);
+
+    std::vector<SDL_FingerID> curIds;
+    curIds.reserve(fps.size());
+    for (const auto& fp : fps)
+        curIds.push_back(fp.id);
+
     auto* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float fontPx = vh * 0.030f;
 
-    // ---- Left analog stick ----
-    const ImVec2 stickC(vw * STICK_CX, vh * STICK_CY);
-    const float baseR = vh * STICK_BASE_R;
-    const float thumbR = vh * STICK_THUMB_R;
-    const float zoneR = vh * STICK_ZONE_R;
-
-    // Resolve which finger owns the stick. A finger grabs it on touch-down inside
-    // the zone and keeps control until it is lifted - even if it wanders outside
-    // the zone, in which case the thumb just clamps to the base radius.
-    const ImVec2* stickPos = nullptr;
-    if (g_stickFingerId != (SDL_FingerID)-1)
+    auto hitFresh = [&](ImVec2 c, float hw, float hh) -> bool
     {
-        for (const auto& fp : fps)
-            if (fp.id == g_stickFingerId) { stickPos = &fp.pos; break; }
+        for (const auto& f : fresh)
+            if (f.pos.x >= c.x - hw && f.pos.x <= c.x + hw && f.pos.y >= c.y - hh && f.pos.y <= c.y + hh)
+                return true;
+        return false;
+    };
 
-        if (!stickPos)
-            g_stickFingerId = (SDL_FingerID)-1; // owning finger was lifted
-    }
-    if (g_stickFingerId == (SDL_FingerID)-1)
+    auto tapBox = [&](ImVec2 c, float hw, float hh, const char* label, bool accent)
     {
-        for (const auto& fp : fps)
+        const ImU32 bg = accent ? IM_COL32(70, 120, 200, 220) : IM_COL32(0, 0, 0, 180);
+        dl->AddRectFilled({ c.x - hw, c.y - hh }, { c.x + hw, c.y + hh }, bg, 8.0f);
+        dl->AddRect({ c.x - hw, c.y - hh }, { c.x + hw, c.y + hh }, IM_COL32(255, 255, 255, 190), 8.0f, 0, 2.0f);
+        const ImVec2 ts = font->CalcTextSizeA(fontPx, FLT_MAX, 0.0f, label);
+        dl->AddText(font, fontPx, { c.x - ts.x * 0.5f, c.y - ts.y * 0.5f }, IM_COL32(255, 255, 255, 255), label);
+    };
+
+    // -----------------------------------------------------------------------
+    // Gameplay mode.
+    // -----------------------------------------------------------------------
+    if (!g_edit)
+    {
+        // EDIT toggle button (top centre).
+        const ImVec2 gearC(vw * 0.5f, vh * 0.050f);
+        const float gearHW = vw * 0.050f;
+        const float gearHH = vh * 0.038f;
+        if (hitFresh(gearC, gearHW, gearHH))
         {
-            const float dx = fp.pos.x - stickC.x;
-            const float dy = fp.pos.y - stickC.y;
-            if (dx * dx + dy * dy <= zoneR * zoneR)
+            g_edit = true;
+            g_state = {};
+            g_stickFingerId = (SDL_FingerID)-1;
+            g_prevIds = std::move(curIds);
+            return;
+        }
+
+        XAMINPUT_GAMEPAD st{};
+
+        // ---- Left analog stick ----
+        const ImVec2 stickC(g_layout.x[TC_STICK] * vw, g_layout.y[TC_STICK] * vh);
+        const float baseR  = STICK_BASE_R  * vh * g_layout.scale;
+        const float thumbR = STICK_THUMB_R * vh * g_layout.scale;
+        const float zoneR  = STICK_ZONE_R  * vh * g_layout.scale;
+
+        const ImVec2* stickPos = nullptr;
+        if (g_stickFingerId != (SDL_FingerID)-1)
+        {
+            for (const auto& fp : fps)
+                if (fp.id == g_stickFingerId) { stickPos = &fp.pos; break; }
+
+            if (!stickPos)
+                g_stickFingerId = (SDL_FingerID)-1;
+        }
+        if (g_stickFingerId == (SDL_FingerID)-1)
+        {
+            for (const auto& fp : fps)
             {
-                g_stickFingerId = fp.id;
-                stickPos = &fp.pos;
-                break;
+                const float dx = fp.pos.x - stickC.x;
+                const float dy = fp.pos.y - stickC.y;
+                if (dx * dx + dy * dy <= zoneR * zoneR)
+                {
+                    g_stickFingerId = fp.id;
+                    stickPos = &fp.pos;
+                    break;
+                }
             }
+        }
+
+        ImVec2 thumbPos = stickC;
+        bool stickActive = false;
+        if (stickPos)
+        {
+            const float dx = stickPos->x - stickC.x;
+            const float dy = stickPos->y - stickC.y;
+            const float len = std::sqrt(dx * dx + dy * dy);
+            const float cl = std::min(len, baseR);
+            const float ux = len > 0.0f ? dx / len : 0.0f;
+            const float uy = len > 0.0f ? dy / len : 0.0f;
+
+            thumbPos = { stickC.x + ux * cl, stickC.y + uy * cl };
+
+            const float ax = (ux * cl) / baseR;
+            const float ay = (uy * cl) / baseR;
+            st.sThumbLX = int16_t(std::clamp(ax * 32767.0f, -32767.0f, 32767.0f));
+            st.sThumbLY = int16_t(std::clamp(-ay * 32767.0f, -32767.0f, 32767.0f));
+
+            stickActive = true;
+        }
+
+        // Buttons are hit-tested against every finger except the stick's.
+        std::vector<ImVec2> pts;
+        pts.reserve(fps.size());
+        for (const auto& fp : fps)
+            if (fp.id != g_stickFingerId)
+                pts.push_back(fp.pos);
+
+        dl->AddCircleFilled(stickC, baseR, IM_COL32(0, 0, 0, stickActive ? 90 : 55), 48);
+        dl->AddCircle(stickC, baseR, IM_COL32(255, 255, 255, 130), 48, 3.0f);
+        dl->AddCircleFilled(thumbPos, thumbR, IM_COL32(255, 255, 255, stickActive ? 170 : 110), 32);
+
+        // ---- Face buttons ----
+        const float faceR = FACE_BTN_R * vh * g_layout.scale;
+        DrawFaceButton(dl, pts, ElemRectOf(TC_A, vw, vh).c, faceR, EButtonIcon::A, XAMINPUT_GAMEPAD_A, st);
+        DrawFaceButton(dl, pts, ElemRectOf(TC_B, vw, vh).c, faceR, EButtonIcon::B, XAMINPUT_GAMEPAD_B, st);
+        DrawFaceButton(dl, pts, ElemRectOf(TC_X, vw, vh).c, faceR, EButtonIcon::X, XAMINPUT_GAMEPAD_X, st);
+        DrawFaceButton(dl, pts, ElemRectOf(TC_Y, vw, vh).c, faceR, EButtonIcon::Y, XAMINPUT_GAMEPAD_Y, st);
+
+        // ---- Shoulders ----
+        const float shHW = SHOULDER_HW * vh * g_layout.scale;
+        const float shHH = SHOULDER_HH * vh * g_layout.scale;
+        if (DrawWideButton(dl, pts, ElemRectOf(TC_LB, vw, vh).c, shHW, shHH, shHW * 0.75f, shHH * 0.85f, EButtonIcon::LB))
+            st.wButtons |= XAMINPUT_GAMEPAD_LEFT_SHOULDER;
+        if (DrawWideButton(dl, pts, ElemRectOf(TC_RB, vw, vh).c, shHW, shHH, shHW * 0.75f, shHH * 0.85f, EButtonIcon::RB))
+            st.wButtons |= XAMINPUT_GAMEPAD_RIGHT_SHOULDER;
+
+        // ---- Triggers ----
+        if (DrawWideButton(dl, pts, ElemRectOf(TC_LT, vw, vh).c, shHW, shHH, shHH * 0.95f, shHH * 0.95f, EButtonIcon::LT))
+            st.bLeftTrigger = 255;
+        if (DrawWideButton(dl, pts, ElemRectOf(TC_RT, vw, vh).c, shHW, shHH, shHH * 0.95f, shHH * 0.95f, EButtonIcon::RT))
+            st.bRightTrigger = 255;
+
+        // ---- Start / Back ----
+        const float menuHW = MENU_HW * vh * g_layout.scale;
+        const float menuHH = MENU_HH * vh * g_layout.scale;
+        if (DrawWideButton(dl, pts, ElemRectOf(TC_START, vw, vh).c, menuHW, menuHH, menuHW, menuHH, EButtonIcon::Start))
+            st.wButtons |= XAMINPUT_GAMEPAD_START;
+        if (DrawWideButton(dl, pts, ElemRectOf(TC_BACK, vw, vh).c, menuHW, menuHH, menuHW, menuHH, EButtonIcon::Back))
+            st.wButtons |= XAMINPUT_GAMEPAD_BACK;
+
+        g_state = st;
+
+        // Draw the EDIT button last so it sits on top.
+        tapBox(gearC, gearHW, gearHH, "EDIT", false);
+
+        g_prevIds = std::move(curIds);
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Editor mode.
+    // -----------------------------------------------------------------------
+    g_state = {};
+    g_stickFingerId = (SDL_FingerID)-1;
+
+    // Dimmed backdrop.
+    dl->AddRectFilled({ 0.0f, 0.0f }, { vw, vh }, IM_COL32(0, 0, 0, 120));
+
+    // Action bar (top). Handle taps first so a tap on a button never starts a drag.
+    const float barY   = vh * 0.055f;
+    const float barHH  = vh * 0.040f;
+    const float wideHW = vw * 0.085f;
+    const float sizeHW = vh * 0.050f;
+
+    const ImVec2 resetC(vw * 0.30f, barY);
+    const ImVec2 minusC(vw * 0.44f, barY);
+    const ImVec2 plusC (vw * 0.56f, barY);
+    const ImVec2 doneC (vw * 0.70f, barY);
+
+    bool changed = false;
+    std::unordered_set<SDL_FingerID> consumed;
+
+    // A tap that hits an action button is "consumed" so the same finger can't also
+    // start dragging a control placed underneath the bar.
+    auto tapConsume = [&](ImVec2 c, float hw, float hh) -> bool
+    {
+        bool hit = false;
+        for (const auto& f : fresh)
+            if (f.pos.x >= c.x - hw && f.pos.x <= c.x + hw && f.pos.y >= c.y - hh && f.pos.y <= c.y + hh)
+            {
+                hit = true;
+                consumed.insert(f.id);
+            }
+        return hit;
+    };
+
+    if (tapConsume(doneC, wideHW, barHH))
+    {
+        SaveLayout();
+        g_edit = false;
+        g_dragElem = -1;
+        g_prevIds = std::move(curIds);
+        return;
+    }
+    if (tapConsume(resetC, wideHW, barHH))
+    {
+        g_layout = kDefault;
+        changed = true;
+    }
+    if (tapConsume(minusC, sizeHW, barHH))
+    {
+        g_layout.scale = std::clamp(g_layout.scale - 0.05f, SCALE_MIN, SCALE_MAX);
+        changed = true;
+    }
+    if (tapConsume(plusC, sizeHW, barHH))
+    {
+        g_layout.scale = std::clamp(g_layout.scale + 0.05f, SCALE_MIN, SCALE_MAX);
+        changed = true;
+    }
+
+    // ---- Dragging ----
+    if (g_dragElem >= 0)
+    {
+        const ImVec2* dp = nullptr;
+        for (const auto& fp : fps)
+            if (fp.id == g_dragFinger) { dp = &fp.pos; break; }
+
+        if (!dp)
+        {
+            g_dragElem = -1;      // finger lifted -> commit
+            changed = true;
+        }
+        else
+        {
+            g_layout.x[g_dragElem] = std::clamp(dp->x / vw + g_grabX, 0.02f, 0.98f);
+            g_layout.y[g_dragElem] = std::clamp(dp->y / vh + g_grabY, 0.02f, 0.98f);
         }
     }
 
-    ImVec2 thumbPos = stickC;
-    bool stickActive = false;
-    if (stickPos)
+    if (g_dragElem < 0)
     {
-        const float dx = stickPos->x - stickC.x;
-        const float dy = stickPos->y - stickC.y;
-        const float len = std::sqrt(dx * dx + dy * dy);
-        const float cl = std::min(len, baseR);
-        const float ux = len > 0.0f ? dx / len : 0.0f;
-        const float uy = len > 0.0f ? dy / len : 0.0f;
+        for (const auto& f : fresh)
+        {
+            if (consumed.count(f.id))
+                continue;
 
-        thumbPos = { stickC.x + ux * cl, stickC.y + uy * cl };
+            for (int i = 0; i < TC_COUNT; ++i)
+            {
+                const ElemRect r = ElemRectOf(i, vw, vh);
+                bool hit;
+                if (r.round)
+                {
+                    const float dx = f.pos.x - r.c.x;
+                    const float dy = f.pos.y - r.c.y;
+                    hit = dx * dx + dy * dy <= r.hw * r.hw;
+                }
+                else
+                {
+                    hit = f.pos.x >= r.c.x - r.hw && f.pos.x <= r.c.x + r.hw &&
+                          f.pos.y >= r.c.y - r.hh && f.pos.y <= r.c.y + r.hh;
+                }
 
-        const float ax = (ux * cl) / baseR;          // -1..1, right positive
-        const float ay = (uy * cl) / baseR;          // -1..1, screen-down positive
-        st.sThumbLX = int16_t(std::clamp(ax * 32767.0f, -32767.0f, 32767.0f));
-        st.sThumbLY = int16_t(std::clamp(-ay * 32767.0f, -32767.0f, 32767.0f)); // up = forward
+                if (hit)
+                {
+                    g_dragElem = i;
+                    g_dragFinger = f.id;
+                    g_grabX = g_layout.x[i] - f.pos.x / vw;
+                    g_grabY = g_layout.y[i] - f.pos.y / vh;
+                    break;
+                }
+            }
 
-        stickActive = true;
+            if (g_dragElem >= 0)
+                break;
+        }
     }
 
-    // Buttons are hit-tested against every finger except the one driving the stick.
-    std::vector<ImVec2> pts;
-    pts.reserve(fps.size());
-    for (const auto& fp : fps)
-        if (fp.id != g_stickFingerId)
-            pts.push_back(fp.pos);
+    // ---- Draw all controls with selection outlines ----
+    for (int i = 0; i < TC_COUNT; ++i)
+    {
+        const ElemRect r = ElemRectOf(i, vw, vh);
+        DrawElemVisual(dl, i, r);
 
-    dl->AddCircleFilled(stickC, baseR, IM_COL32(0, 0, 0, stickActive ? 90 : 55), 48);
-    dl->AddCircle(stickC, baseR, IM_COL32(255, 255, 255, 130), 48, 3.0f);
-    dl->AddCircleFilled(thumbPos, thumbR, IM_COL32(255, 255, 255, stickActive ? 170 : 110), 32);
+        const ImU32 col = (i == g_dragElem) ? IM_COL32(255, 220, 60, 255) : IM_COL32(70, 200, 110, 220);
+        if (r.round)
+            dl->AddCircle(r.c, r.hw, col, 40, 3.0f);
+        else
+            dl->AddRect({ r.c.x - r.hw, r.c.y - r.hh }, { r.c.x + r.hw, r.c.y + r.hh }, col, 6.0f, 0, 3.0f);
+    }
 
-    // ---- Right face buttons ----
-    const ImVec2 faceC(vw * FACE_CX, vh * FACE_CY);
-    const float spread = vh * FACE_SPREAD;
-    const float faceR = vh * FACE_BTN_R;
-    DrawFaceButton(dl, pts, { faceC.x, faceC.y + spread }, faceR, EButtonIcon::A, XAMINPUT_GAMEPAD_A, st);
-    DrawFaceButton(dl, pts, { faceC.x + spread, faceC.y }, faceR, EButtonIcon::B, XAMINPUT_GAMEPAD_B, st);
-    DrawFaceButton(dl, pts, { faceC.x - spread, faceC.y }, faceR, EButtonIcon::X, XAMINPUT_GAMEPAD_X, st);
-    DrawFaceButton(dl, pts, { faceC.x, faceC.y - spread }, faceR, EButtonIcon::Y, XAMINPUT_GAMEPAD_Y, st);
+    // ---- Action bar on top ----
+    tapBox(resetC, wideHW, barHH, "RESET", false);
+    tapBox(minusC, sizeHW, barHH, "-", false);
+    tapBox(plusC,  sizeHW, barHH, "+", false);
+    tapBox(doneC,  wideHW, barHH, "DONE", true);
 
-    // ---- Shoulders ----
-    const float shHW = vh * SHOULDER_HW;
-    const float shHH = vh * SHOULDER_HH;
-    if (DrawWideButton(dl, pts, { vw * SHOULDER_LX, vh * SHOULDER_Y }, shHW, shHH, shHW * 0.75f, shHH * 0.85f, EButtonIcon::LB))
-        st.wButtons |= XAMINPUT_GAMEPAD_LEFT_SHOULDER;
-    if (DrawWideButton(dl, pts, { vw * SHOULDER_RX, vh * SHOULDER_Y }, shHW, shHH, shHW * 0.75f, shHH * 0.85f, EButtonIcon::RB))
-        st.wButtons |= XAMINPUT_GAMEPAD_RIGHT_SHOULDER;
+    char sizeLabel[32];
+    snprintf(sizeLabel, sizeof(sizeLabel), "SIZE %d%%", int(g_layout.scale * 100.0f + 0.5f));
+    const ImVec2 slSize = font->CalcTextSizeA(fontPx, FLT_MAX, 0.0f, sizeLabel);
+    dl->AddText(font, fontPx, { vw * 0.50f - slSize.x * 0.5f, barY + barHH * 1.4f }, IM_COL32(255, 255, 255, 230), sizeLabel);
 
-    // ---- Triggers ----
-    if (DrawWideButton(dl, pts, { vw * SHOULDER_LX, vh * TRIGGER_Y }, shHW, shHH, shHH * 0.95f, shHH * 0.95f, EButtonIcon::LT))
-        st.bLeftTrigger = 255;
-    if (DrawWideButton(dl, pts, { vw * SHOULDER_RX, vh * TRIGGER_Y }, shHW, shHH, shHH * 0.95f, shHH * 0.95f, EButtonIcon::RT))
-        st.bRightTrigger = 255;
+    const char* hint = "Drag buttons to arrange";
+    const ImVec2 hintSize = font->CalcTextSizeA(fontPx, FLT_MAX, 0.0f, hint);
+    dl->AddText(font, fontPx, { vw * 0.50f - hintSize.x * 0.5f, vh * 0.14f }, IM_COL32(255, 255, 255, 200), hint);
 
-    // ---- Start / Back ----
-    const float menuHW = vh * MENU_HW;
-    const float menuHH = vh * MENU_HH;
-    if (DrawWideButton(dl, pts, { vw * 0.5f + vw * MENU_DX, vh * MENU_Y }, menuHW, menuHH, menuHW, menuHH, EButtonIcon::Start))
-        st.wButtons |= XAMINPUT_GAMEPAD_START;
-    if (DrawWideButton(dl, pts, { vw * 0.5f - vw * MENU_DX, vh * MENU_Y }, menuHW, menuHH, menuHW, menuHH, EButtonIcon::Back))
-        st.wButtons |= XAMINPUT_GAMEPAD_BACK;
+    if (changed)
+        SaveLayout();
 
-    g_state = st;
+    g_prevIds = std::move(curIds);
 }

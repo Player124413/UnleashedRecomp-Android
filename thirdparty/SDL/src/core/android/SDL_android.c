@@ -347,6 +347,10 @@ static jmethodID midAudioWriteByteBuffer;
 static jmethodID midAudioWriteShortBuffer;
 static jmethodID midAudioWriteFloatBuffer;
 static jmethodID midAudioClose;
+static jmethodID midAudioRouteOutput;
+static jmethodID midAudioFlushOutput;
+static jmethodID midAudioPauseOutput;
+static jmethodID midAudioResumeOutput;
 static jmethodID midCaptureOpen;
 static jmethodID midCaptureReadByteBuffer;
 static jmethodID midCaptureReadShortBuffer;
@@ -683,6 +687,14 @@ JNIEXPORT void JNICALL SDL_JAVA_AUDIO_INTERFACE(nativeSetupJNI)(JNIEnv *env, jcl
                                                          "audioWriteFloatBuffer", "([F)V");
     midAudioClose = (*env)->GetStaticMethodID(env, mAudioManagerClass,
                                               "audioClose", "()V");
+    midAudioRouteOutput = (*env)->GetStaticMethodID(env, mAudioManagerClass,
+                                                    "audioRouteOutput", "(I)Z");
+    midAudioFlushOutput = (*env)->GetStaticMethodID(env, mAudioManagerClass,
+                                                    "audioFlushOutput", "()V");
+    midAudioPauseOutput = (*env)->GetStaticMethodID(env, mAudioManagerClass,
+                                                    "audioPauseOutput", "()V");
+    midAudioResumeOutput = (*env)->GetStaticMethodID(env, mAudioManagerClass,
+                                                     "audioResumeOutput", "()V");
     midCaptureOpen = (*env)->GetStaticMethodID(env, mAudioManagerClass,
                                                "captureOpen", "(IIIII)[I");
     midCaptureReadByteBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
@@ -698,7 +710,8 @@ JNIEXPORT void JNICALL SDL_JAVA_AUDIO_INTERFACE(nativeSetupJNI)(JNIEnv *env, jcl
 
     if (!midGetAudioOutputDevices || !midGetAudioInputDevices || !midAudioOpen ||
         !midAudioWriteByteBuffer || !midAudioWriteShortBuffer || !midAudioWriteFloatBuffer ||
-        !midAudioClose ||
+        !midAudioClose || !midAudioRouteOutput || !midAudioFlushOutput ||
+        !midAudioPauseOutput || !midAudioResumeOutput ||
         !midCaptureOpen || !midCaptureReadByteBuffer || !midCaptureReadShortBuffer ||
         !midCaptureReadFloatBuffer || !midCaptureClose || !midAudioSetThreadPriority) {
         __android_log_print(ANDROID_LOG_WARN, "SDL",
@@ -1086,8 +1099,15 @@ retry:
         SDL_VideoDevice *_this = SDL_GetVideoDevice();
         SDL_WindowData *data = (SDL_WindowData *)Android_Window->driverdata;
 
-        /* Wait for Main thread being paused and context un-activated to release 'egl_surface' */
-        if (!data->backup_done) {
+        /* Wait for Main thread being paused and context un-activated to release 'egl_surface'.
+         * Vulkan windows never create an EGL surface, so there is nothing to back up; skipping
+         * the wait releases the native window immediately, which the app's window watcher
+         * relies on to freeze the game promptly on background. */
+        if (!data->backup_done
+#ifdef SDL_VIDEO_OPENGL_EGL
+            && data->egl_surface != EGL_NO_SURFACE
+#endif
+            ) {
             nb_attempt -= 1;
             if (nb_attempt == 0) {
                 SDL_SetError("Try to release egl_surface with context probably still active");
@@ -1877,6 +1897,53 @@ static SDL_bool Android_JNI_ExceptionOccurred(SDL_bool silent)
     }
 
     return SDL_FALSE;
+}
+
+int Android_JNI_RouteAudioOutput(int device_id)
+{
+    JNIEnv *env = Android_JNI_GetEnv();
+    jboolean routed;
+
+    if (!midAudioRouteOutput) {
+        return SDL_SetError("audioRouteOutput JNI binding missing");
+    }
+
+    routed = (*env)->CallStaticBooleanMethod(env, mAudioManagerClass, midAudioRouteOutput, device_id);
+    if (Android_JNI_ExceptionOccurred(SDL_FALSE)) {
+        return -1;
+    }
+
+    return routed ? 0 : SDL_SetError("audioRouteOutput returned false");
+}
+
+void Android_JNI_FlushAudioOutput(void)
+{
+    JNIEnv *env = Android_JNI_GetEnv();
+
+    if (midAudioFlushOutput) {
+        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioFlushOutput);
+        Android_JNI_ExceptionOccurred(SDL_TRUE);
+    }
+}
+
+void Android_JNI_PauseAudioOutput(void)
+{
+    JNIEnv *env = Android_JNI_GetEnv();
+
+    if (midAudioPauseOutput) {
+        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioPauseOutput);
+        Android_JNI_ExceptionOccurred(SDL_TRUE);
+    }
+}
+
+void Android_JNI_ResumeAudioOutput(void)
+{
+    JNIEnv *env = Android_JNI_GetEnv();
+
+    if (midAudioResumeOutput) {
+        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioResumeOutput);
+        Android_JNI_ExceptionOccurred(SDL_TRUE);
+    }
 }
 
 static void Internal_Android_Create_AssetManager(void)

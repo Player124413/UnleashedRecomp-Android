@@ -36,6 +36,9 @@
 #include <xxHashMap.h>
 #include <os/process.h>
 #include <os/logger.h>
+#if defined(__ANDROID__)
+#include <os/android/vulkan_driver_android.h>
+#endif
 
 #if defined(ASYNC_PSO_DEBUG) || defined(PSO_CACHING)
 #include <magic_enum/magic_enum.hpp>
@@ -284,6 +287,22 @@ static Profiler g_frameFenceProfiler;
 static Profiler g_presentWaitProfiler;
 static Profiler g_swapChainAcquireProfiler;
 
+// Command stream counters defined in plume_vulkan.cpp (always compiled in);
+// zero when the D3D12 backend is active. Snapshotted at end of frame recording.
+extern "C" {
+    extern uint32_t g_plumeDrawCalls;
+    extern uint32_t g_plumeRenderPassBegins;
+    extern uint32_t g_plumePipelineBinds;
+    extern uint32_t g_plumeBarrierCalls;
+    extern uint32_t g_plumeFramebufferSets;
+}
+
+static uint32_t g_statDrawCalls;
+static uint32_t g_statRenderPassBegins;
+static uint32_t g_statPipelineBinds;
+static uint32_t g_statBarrierCalls;
+static uint32_t g_statFramebufferSets;
+
 #ifdef __ANDROID__
 // No keyboard on Android to hit the F1 toggle, so keep the overlay on while the
 // port's performance is being investigated.
@@ -328,6 +347,9 @@ static std::unique_ptr<RenderCommandFence> g_copyCommandFence;
 
 static std::unique_ptr<RenderSwapChain> g_swapChain;
 static bool g_swapChainValid;
+#if defined(__ANDROID__)
+static uint64_t g_androidSwapchainRetryAfterMs;
+#endif
 
 #if defined(__ANDROID__)
 // The Android WSI surface backing the ANativeWindow on this device only reports RGBA-order
@@ -1555,16 +1577,73 @@ static void CheckSwapChain()
     g_swapChain->setVsyncEnabled(Config::VSync);
     g_swapChainValid &= !g_swapChain->needsResize();
 
+#if defined(__ANDROID__)
+    // Android replaces the ANativeWindow across background/foreground. The old VkSurfaceKHR
+    // then references a dead window: swapchain recreation and presents "succeed" but never
+    // reach the screen (black screen while audio keeps running). Compare every frame so the
+    // change is caught even if lifecycle events were missed.
+    plume::RenderWindow currentNativeWindow = GameWindow::GetAndroidNativeWindow();
+    if (currentNativeWindow != g_swapChain->getWindow())
+        g_swapChainValid = false;
+#endif
+
     if (!g_swapChainValid)
     {
+#if defined(__ANDROID__)
+        const uint64_t nowMs = SDL_GetTicks64();
+        if (nowMs < g_androidSwapchainRetryAfterMs)
+            goto skipResizeAttempt;
+
+        // Backgrounded: no window to present into yet. Keep rendering offscreen and retry.
+        if (currentNativeWindow == nullptr)
+        {
+            g_androidSwapchainRetryAfterMs = nowMs + 100;
+            goto skipResizeAttempt;
+        }
+
+        if (currentNativeWindow != g_swapChain->getWindow())
+        {
+            Video::WaitForGPU();
+            os::logger::Log("native window changed; recreating Vulkan surface", os::logger::ELogType::Utility, "android");
+            GameWindow::s_renderWindow = currentNativeWindow;
+
+            if (!g_swapChain->recreateSurface(currentNativeWindow))
+            {
+                g_androidSwapchainRetryAfterMs = nowMs + 500;
+                os::logger::Log("surface recreate failed; delaying retry", os::logger::ELogType::Warning, "android");
+                goto skipResizeAttempt;
+            }
+        }
+#endif
+
         Video::WaitForGPU();
         g_backBuffer->framebuffers.clear();
         g_swapChainValid = g_swapChain->resize();
         g_needsResize = g_swapChainValid;
+
+#if defined(__ANDROID__)
+        if (!g_swapChainValid)
+        {
+            g_androidSwapchainRetryAfterMs = nowMs + 500;
+            os::logger::Log("swapchain resize failed; delaying retry", os::logger::ELogType::Warning, "android");
+        }
+        else
+        {
+            os::logger::Log("swapchain (re)created successfully", os::logger::ELogType::Utility, "android");
+            AndroidMarkVulkanStartupSuccessful();
+        }
+#endif
     }
 
+#if defined(__ANDROID__)
+skipResizeAttempt:
+#endif
     if (g_swapChainValid)
     {
+#if defined(__ANDROID__)
+        // Idempotent after success and retries marker removal if storage had a transient error.
+        AndroidMarkVulkanStartupSuccessful();
+#endif
         g_swapChainAcquireProfiler.Begin();
         g_swapChainValid = g_swapChain->acquireTexture(g_acquireSemaphores[g_frame].get(), &g_backBufferIndex);
         g_swapChainAcquireProfiler.End();
@@ -1906,6 +1985,14 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     g_swapChain = g_queue->createSwapChain(GameWindow::s_renderWindow, bufferCount, BACKBUFFER_FORMAT, Config::MaxFrameLatency);
     g_swapChain->setVsyncEnabled(Config::VSync);
     g_swapChainValid = !g_swapChain->needsResize();
+
+#if defined(__ANDROID__)
+    // A custom loader reaching dlopen/device creation is not sufficient: only a usable WSI
+    // swapchain proves that Vulkan startup completed. If initial WSI creation is deferred,
+    // CheckSwapChain() clears the marker after its first successful resize instead.
+    if (g_vulkan && g_swapChainValid)
+        AndroidMarkVulkanStartupSuccessful();
+#endif
 
     for (auto& acquireSemaphore : g_acquireSemaphores)
         acquireSemaphore = g_device->createCommandSemaphore();
@@ -2484,6 +2571,13 @@ static void DrawProfiler()
         ImGui::Text("Buffer Uploads: %d", int32_t(g_bufferUploadCount));
         ImGui::NewLine();
 
+        ImGui::Text("Draw Calls: %u", g_statDrawCalls);
+        ImGui::Text("Render Pass Begins: %u", g_statRenderPassBegins);
+        ImGui::Text("Pipeline Binds: %u", g_statPipelineBinds);
+        ImGui::Text("Barrier Calls: %u", g_statBarrierCalls);
+        ImGui::Text("Framebuffer Sets: %u", g_statFramebufferSets);
+        ImGui::NewLine();
+
         ImGui::Text("Present Wait: %s", g_capabilities.presentWait ? "Supported" : "Unsupported");
         ImGui::Text("Triangle Fan: %s", g_capabilities.triangleFan ? "Supported" : "Unsupported");
         ImGui::Text("Dynamic Depth Bias: %s", g_capabilities.dynamicDepthBias ? "Supported" : "Unsupported");
@@ -2818,6 +2912,18 @@ void Video::WaitOnSwapChain()
     }
 }
 
+void Video::OnAndroidResume()
+{
+    // Called from app tick unpause (after nativeResume / surface resume).
+    // Android may have invalidated the ANativeWindow-backed surface during background.
+    // Invalidate so CheckSwapChain will recreate on next present.
+    // This fixes black screen on resume while audio continues independently.
+    g_swapChainValid = false;
+    g_pendingWaitOnSwapChain = true;
+    g_androidSwapchainRetryAfterMs = 0;
+    // Note: actual recreate happens in CheckSwapChain() via g_swapChain->resize()
+}
+
 static bool g_shouldPrecompilePipelines;
 static std::atomic<bool> g_executedCommandList;
 
@@ -3013,6 +3119,17 @@ static void ProcExecuteCommandList(const RenderCommand& cmd)
     auto &commandList = g_commandLists[g_frame];
     commandList->writeTimestamp(g_queryPools[g_frame].get(), 1);
     commandList->end();
+
+    g_statDrawCalls = g_plumeDrawCalls;
+    g_statRenderPassBegins = g_plumeRenderPassBegins;
+    g_statPipelineBinds = g_plumePipelineBinds;
+    g_statBarrierCalls = g_plumeBarrierCalls;
+    g_statFramebufferSets = g_plumeFramebufferSets;
+    g_plumeDrawCalls = 0;
+    g_plumeRenderPassBegins = 0;
+    g_plumePipelineBinds = 0;
+    g_plumeBarrierCalls = 0;
+    g_plumeFramebufferSets = 0;
 
     if (g_swapChainValid)
     {

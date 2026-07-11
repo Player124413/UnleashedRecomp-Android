@@ -250,6 +250,7 @@ namespace plume {
         void wait() override;
         bool resize() override;
         bool needsResize() const override;
+        bool recreateSurface(RenderWindow renderWindow) override;
         void setVsyncEnabled(bool vsyncEnabled) override;
         bool isVsyncEnabled() const override;
         uint32_t getWidth() const override;

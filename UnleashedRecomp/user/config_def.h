@@ -14,6 +14,9 @@ CONFIG_DEFINE_ENUM_LOCALISED("Input", ECameraRotationMode, HorizontalCamera, ECa
 CONFIG_DEFINE_ENUM_LOCALISED("Input", ECameraRotationMode, VerticalCamera, ECameraRotationMode::Normal);
 CONFIG_DEFINE_LOCALISED("Input", bool, Vibration, true);
 CONFIG_DEFINE_LOCALISED("Input", bool, AllowBackgroundInput, false);
+#ifdef __ANDROID__
+CONFIG_DEFINE_ENUM_LOCALISED("Input", EAndroidTouchControlsPolicy, TouchControls, EAndroidTouchControlsPolicy::Auto);
+#endif
 CONFIG_DEFINE_ENUM_LOCALISED("Input", EControllerIcons, ControllerIcons, EControllerIcons::Auto);
 
 CONFIG_DEFINE_ENUM("Bindings", SDL_Scancode, Key_A, SDL_SCANCODE_S);
@@ -48,6 +51,10 @@ CONFIG_DEFINE_LOCALISED("Audio", bool, BattleTheme, true);
 
 CONFIG_DEFINE("Video", std::string, GraphicsDevice, "");
 CONFIG_DEFINE_ENUM("Video", EGraphicsAPI, GraphicsAPI, EGraphicsAPI::Auto);
+#ifdef __ANDROID__
+CONFIG_DEFINE_ENUM_LOCALISED("Video", EAndroidVulkanDriver, VulkanDriver, EAndroidVulkanDriver::Auto);
+CONFIG_DEFINE_ENUM_LOCALISED("Video", EAndroidRenderMode, RenderMode, EAndroidRenderMode::Auto);
+#endif
 CONFIG_DEFINE("Video", int32_t, WindowX, WINDOWPOS_CENTRED);
 CONFIG_DEFINE("Video", int32_t, WindowY, WINDOWPOS_CENTRED);
 CONFIG_DEFINE_LOCALISED("Video", int32_t, WindowSize, -1);

@@ -140,6 +140,7 @@ static void* StderrToLogcatThread(void*)
 
 static std::atomic<double> s_lastHeartbeat{ 0.0 };
 static std::atomic<uint64_t> s_frameCount{ 0 };
+static std::atomic<bool> s_watchdogSuspended{ false };
 static std::once_flag s_watchdogOnce;
 
 static void ReadProcFileTrimmed(const char* path, char* out, size_t outSize)
@@ -215,6 +216,10 @@ static void* WatchdogThread(void*)
     {
         usleep(1000 * 1000); // 1s
 
+        // The game is intentionally frozen (backgrounded); missing frames are not a hang.
+        if (s_watchdogSuspended.load(std::memory_order_relaxed))
+            continue;
+
         const double now = MonotonicSeconds() - s_startSeconds;
         const double last = s_lastHeartbeat.load(std::memory_order_relaxed);
         const uint64_t frames = s_frameCount.load(std::memory_order_relaxed);
@@ -288,6 +293,10 @@ void os::logger::Init()
     // Create log.txt promptly (and roll the previous one) so a tester always finds a
     // fresh file, even if this run happens to log nothing else before a freeze.
     WriteLogRecord("[logger]", nullptr, "Unleashed Recomp log started", 28);
+    static constexpr char BuildVersion[] = "=== APK VERSION: roadmap-v29-recovery-touch-back (2026-07-10) ===";
+    static constexpr char BuildId[] = "ANDROID_BUILD_ID=roadmap-v32-mod-files-back-recovery-touch";
+    WriteLogRecord("[build]", nullptr, BuildVersion, sizeof(BuildVersion) - 1);
+    WriteLogRecord("[build]", nullptr, BuildId, sizeof(BuildId) - 1);
 }
 
 void os::logger::Log(const std::string_view str, ELogType type, const char* func)
@@ -318,6 +327,17 @@ void os::logger::Log(const std::string_view str, ELogType type, const char* func
     }
 
     WriteLogRecord(fileTag, func, str.data(), str.size());
+}
+
+void os::logger::SetWatchdogSuspended(bool suspended)
+{
+    if (!suspended)
+    {
+        // Fresh grace period so the frames missed while frozen don't read as a hang.
+        s_lastHeartbeat.store(MonotonicSeconds() - s_startSeconds, std::memory_order_relaxed);
+    }
+
+    s_watchdogSuspended.store(suspended, std::memory_order_relaxed);
 }
 
 void os::logger::Heartbeat()
