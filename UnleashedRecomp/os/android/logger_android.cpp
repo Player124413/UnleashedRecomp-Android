@@ -293,8 +293,8 @@ void os::logger::Init()
     // Create log.txt promptly (and roll the previous one) so a tester always finds a
     // fresh file, even if this run happens to log nothing else before a freeze.
     WriteLogRecord("[logger]", nullptr, "Unleashed Recomp log started", 28);
-    static constexpr char BuildVersion[] = "=== APK VERSION: roadmap-v29-recovery-touch-back (2026-07-10) ===";
-    static constexpr char BuildId[] = "ANDROID_BUILD_ID=roadmap-v32-mod-files-back-recovery-touch";
+    static constexpr char BuildVersion[] = "=== APK VERSION: roadmap-v33-mali-bcn-gpu-detect (2026-07-11) ===";
+    static constexpr char BuildId[] = "ANDROID_BUILD_ID=roadmap-v33-mali-bcn-gpu-detect";
     WriteLogRecord("[build]", nullptr, BuildVersion, sizeof(BuildVersion) - 1);
     WriteLogRecord("[build]", nullptr, BuildId, sizeof(BuildId) - 1);
 }

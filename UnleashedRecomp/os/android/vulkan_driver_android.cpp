@@ -9,6 +9,7 @@
 #include <SDL.h>
 #include <SDL_system.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cerrno>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include <jni.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 #include <vector>
 
@@ -33,7 +35,11 @@
 // diagnostic override. "flushall" enables Mesa's real full per-draw flush and causes
 // a massive FPS hit.
 static constexpr const char *BUNDLED_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a732.so";
-static constexpr const char *BUNDLED_DRIVER_ASSET = "turnip/vulkan.unleashed26_1_wfm_a732.so";
+// The asset must NOT live under "turnip/": SDL_RWFromFile resolves relative paths against
+// internal storage BEFORE the APK asset system, and the driver is extracted to the internal
+// "turnip/" directory under the same name - the extracted copy would permanently shadow the
+// packaged asset and driver updates shipped in the APK would never be seen again.
+static constexpr const char *BUNDLED_DRIVER_ASSET = "bundled_driver/vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *DEFAULT_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *LAST_IMPORTED_DRIVER_FILE = "last_imported_driver.txt";
 static constexpr const char *VULKAN_STARTUP_STATE_FILE = "vulkan_startup_state.txt";
@@ -67,6 +73,57 @@ static std::string GetTurnipDir()
         return {};
 
     return (internalDir / "turnip/").string();
+}
+
+enum class EAndroidGpuFamily
+{
+    Adreno,
+    Xclipse,
+    Other,
+    Unknown,
+};
+
+// Identifies the GPU family from the Vulkan/EGL HAL system properties (the HAL library is
+// named vulkan.<ro.hardware.vulkan>.so) without loading any driver. The bundled Turnip build
+// only works on Adreno; attempting it on other GPUs crashes the first launch and relies on
+// boot recovery to reach the system driver on the second one.
+static EAndroidGpuFamily DetectGpuFamily(std::string &description)
+{
+    char vulkanProp[PROP_VALUE_MAX]{};
+    char eglProp[PROP_VALUE_MAX]{};
+    __system_property_get("ro.hardware.vulkan", vulkanProp);
+    __system_property_get("ro.hardware.egl", eglProp);
+
+    description = {};
+    if (vulkanProp[0] != '\0')
+        description += vulkanProp;
+
+    if (eglProp[0] != '\0' && strcmp(vulkanProp, eglProp) != 0)
+    {
+        if (!description.empty())
+            description += "/";
+
+        description += eglProp;
+    }
+
+    std::string lowered = description;
+    for (char &c : lowered)
+        c = char(tolower(uint8_t(c)));
+
+    if (lowered.empty())
+        return EAndroidGpuFamily::Unknown;
+
+    if (lowered.find("adreno") != std::string::npos)
+        return EAndroidGpuFamily::Adreno;
+
+    // Samsung Xclipse (RDNA-based) ships its Vulkan HAL as vulkan.samsung.so.
+    if (lowered.find("samsung") != std::string::npos || lowered.find("sgpu") != std::string::npos ||
+        lowered.find("xclipse") != std::string::npos)
+    {
+        return EAndroidGpuFamily::Xclipse;
+    }
+
+    return EAndroidGpuFamily::Other;
 }
 
 static const char *VulkanDriverName(EAndroidVulkanDriver driver)
@@ -528,7 +585,15 @@ static void ProcessDriverImportDir(const std::filesystem::path &turnipDir)
         "(the PARENT folder's gfxr/ subfolder). Keep the session SHORT (reach the\n"
         "spot that shows the bug, then close the game) - the file grows the whole\n"
         "time and can get large. Send that .gfxr, then DELETE gfxrecon_capture.txt\n"
-        "to return to normal (capturing slows the game down a lot).\n");
+        "to return to normal (capturing slows the game down a lot).\n"
+        "\n"
+        "NON-ADRENO DEVICES (Mali / PowerVR / Xclipse): the bundled driver is\n"
+        "Adreno-only, so the game automatically uses the system Vulkan driver\n"
+        "instead. BC textures are decompressed on the CPU when the driver lacks\n"
+        "them. On Mali you can experiment with importing a PanVK build (a plain\n"
+        ".so) here. Samsung Xclipse compatibility packages from\n"
+        "https://github.com/WearyConcern1165/ExynosTools are multi-file bundles\n"
+        "and cannot be imported here yet.\n");
 
     for (const auto &entry : std::filesystem::directory_iterator(importDir, ec))
     {
@@ -861,6 +926,32 @@ void *AndroidGetCustomVulkanLoader()
             driverName = GetCustomDriverName(turnipDir);
             LOG("Android Vulkan driver mode: Auto.");
             break;
+    }
+
+    std::string gpuDescription;
+    const EAndroidGpuFamily gpuFamily = DetectGpuFamily(gpuDescription);
+    if (gpuFamily != EAndroidGpuFamily::Adreno && gpuFamily != EAndroidGpuFamily::Unknown)
+    {
+        // Auto only skips the *bundled* Turnip: an explicitly imported driver selected on a
+        // non-Adreno device (e.g. a PanVK build on Mali) stays honored, as do the explicit
+        // Bundled/Imported modes. Returning before ArmCustomVulkanStartup keeps this launch
+        // out of the crash-recovery cycle entirely.
+        if (g_runtimeVulkanDriver == EAndroidVulkanDriver::Auto && driverName == BUNDLED_DRIVER_NAME)
+        {
+            LOGF_WARNING("Detected non-Adreno GPU (\"{}\"): the bundled Turnip driver is Adreno-only, using the system Vulkan driver.",
+                gpuDescription);
+
+            if (gpuFamily == EAndroidGpuFamily::Xclipse)
+            {
+                LOG("Samsung Xclipse detected. Community Vulkan compatibility packages exist at "
+                    "https://github.com/WearyConcern1165/ExynosTools (not yet importable here; the system driver is used).");
+            }
+
+            return nullptr;
+        }
+
+        LOGF_WARNING("Custom Vulkan driver \"{}\" is selected on a non-Adreno GPU (\"{}\"); attempting to load it anyway.",
+            driverName, gpuDescription);
     }
 
     if (!IsSafeDriverFileName(driverName))
