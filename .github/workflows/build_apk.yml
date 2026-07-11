@@ -181,6 +181,7 @@ jobs:
         magick resources/icon.png -resize 96x96   android-apk/app/src/main/res/mipmap-xhdpi/ic_launcher.png
         magick resources/icon.png -resize 144x144 android-apk/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
         magick resources/icon.png -resize 192x192 android-apk/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+        magick resources/icon.png -background none -gravity center -extent 151% android-apk/app/src/main/res/mipmap-anydpi-v26/../mipmap/ic_launcher_foreground.png
 
     
     - name: Build APK
