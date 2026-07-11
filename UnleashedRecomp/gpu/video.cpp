@@ -1923,6 +1923,13 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
     g_capabilities = g_device->getCapabilities();
 
+    {
+        const RenderDeviceDescription &createdDeviceDescription = g_device->getDescription();
+        LOGF("GPU device created: \"{}\" (vendor 0x{:X}, driver version 0x{:X}, API {}).",
+            createdDeviceDescription.name, uint32_t(createdDeviceDescription.vendor),
+            createdDeviceDescription.driverVersion, g_vulkan ? "Vulkan" : "D3D12");
+    }
+
 #if defined(__ANDROID__)
     // Testing hook: a force_no_bc.txt in the external driver_import folder (reachable over
     // MTP/file managers) or in the internal files dir (reachable via adb run-as, since
