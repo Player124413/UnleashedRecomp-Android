@@ -29,8 +29,12 @@
 
 ## How it is used
 - This exact file is bundled in the APK at
-  `android-apk/app/src/main/assets/turnip/` and is extracted to internal storage
-  on first launch, then loaded via **libadrenotools**.
+  `android-apk/app/src/main/assets/bundled_driver/` and is extracted to internal
+  storage (`files/turnip/`) on first launch, then loaded via **libadrenotools**.
+  The asset directory deliberately differs from the extraction directory:
+  SDL_RWFromFile resolves relative paths against internal storage *before* the
+  APK assets, so an asset under `turnip/` would be permanently shadowed by its
+  own extracted copy and APK driver updates would never provision.
 - To try a different Turnip build without rebuilding the app, drop a plain `.so`
   into `Android/data/org.libsdl.app/files/driver_import/` on the device.
 

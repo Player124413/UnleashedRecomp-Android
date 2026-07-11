@@ -24,7 +24,9 @@ This is an unofficial Android port of [Unleashed Recompiled](https://github.com/
 
 The main development targets are Adreno 710, 725, 732, and 750. Adreno 720 and 722 are included in the bundled driver but need more testing. Other Adreno 6xx/7xx devices may work, but are not guaranteed.
 
-Mali, PowerVR, Xclipse, and other non-Adreno GPUs are not currently supported by the bundled driver.
+**Mali support is experimental.** Recent Mali GPUs (Valhall generation and newer with a Vulkan 1.3 driver — e.g. G610/G615/G710/G715/G720) run the game through the stock system driver: the app detects a non-Adreno GPU automatically and skips the bundled Adreno driver. Textures are decompressed on the CPU when the driver lacks BC format support, which increases memory usage. Confirmed working on a Dimensity 8300 Ultra (Mali-G615). Older Mali generations (Bifrost and earlier) cannot work.
+
+PowerVR and Samsung Xclipse are untested. On Xclipse devices the system driver is used; community compatibility packages exist at [ExynosTools](https://github.com/WearyConcern1165/ExynosTools) but cannot be imported into this app yet.
 
 ## Before you install
 
@@ -32,7 +34,7 @@ You need:
 
 - A 64-bit Android device
 - Android 9 or newer
-- A supported Qualcomm Adreno GPU
+- A supported Qualcomm Adreno GPU (or a recent Mali GPU — experimental)
 - Several gigabytes of free storage
 - Your own Xbox 360 game dump
 
