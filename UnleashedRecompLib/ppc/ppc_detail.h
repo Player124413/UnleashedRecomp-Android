@@ -19,13 +19,17 @@ extern "C" void PPCIndirectCallMissing(PPCContext& ctx, uint8_t* base, uint32_t 
 // pointer 0. The stock macro dereferences the function table unconditionally,
 // which for such targets reads far outside the table and jumps to garbage.
 // Validate the target range and the resolved host pointer instead of crashing.
+// The valid range spans to the image end, not just the code section: kernel import
+// thunks live directly after the code (first at exactly PPC_CODE_BASE+PPC_CODE_SIZE)
+// and are registered into the function table by Memory::InsertFunction.
 #define PPC_CALL_INDIRECT_FUNC(x) \
     do \
     { \
         const uint32_t ppcCallTarget_ = (uint32_t)(x); \
-        PPCFunc* ppcCallFn_ = (uint64_t(ppcCallTarget_) - PPC_CODE_BASE < PPC_CODE_SIZE) \
-            ? PPC_LOOKUP_FUNC(base, ppcCallTarget_) \
-            : nullptr; \
+        PPCFunc* ppcCallFn_ = \
+            (uint64_t(ppcCallTarget_) - PPC_CODE_BASE < PPC_IMAGE_BASE + PPC_IMAGE_SIZE - PPC_CODE_BASE) \
+                ? PPC_LOOKUP_FUNC(base, ppcCallTarget_) \
+                : nullptr; \
         if (ppcCallFn_ != nullptr) \
             ppcCallFn_(ctx, base); \
         else \
