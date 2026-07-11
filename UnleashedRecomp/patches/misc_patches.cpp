@@ -247,6 +247,32 @@ PPC_FUNC(sub_82F77188)
                     LOGFN_ERROR("  childB @{:08X}: {}", childB, DumpGuestWords(base, childB, 12));
                 if (!invalidPtr(ctx.r4.u32))
                     LOGFN_ERROR("  arg r4 @{:08X}: {}", ctx.r4.u32, DumpGuestWords(base, ctx.r4.u32, 12));
+
+                // Follow every pointer-shaped field one level: heap objects begin with a
+                // guest vtable (0x82xxxxxx), which statically identifies the class.
+                auto followPtr = [&](const char* label, uint32_t value)
+                {
+                    if (value >= 0x1000 && value < 0x20000000)
+                        LOGFN_ERROR("  {} -> @{:08X}: {}", label, value, DumpGuestWords(base, value, 8));
+                };
+
+                followPtr("this+8  ", PPC_LOAD_U32(ctx.r3.u32 + 8));
+                if (!invalidPtr(childA))
+                {
+                    // Owner/registry candidate: dump further to cover the slot tables
+                    // around +76 seen in sub_82F76698.
+                    uint32_t ownerA = PPC_LOAD_U32(childA + 0);
+                    if (ownerA >= 0x1000 && ownerA < 0x20000000)
+                        LOGFN_ERROR("  childA+0 -> @{:08X}: {}", ownerA, DumpGuestWords(base, ownerA, 24));
+                }
+                if (!invalidPtr(childB))
+                    followPtr("childB+0", PPC_LOAD_U32(childB + 0));
+                if (!invalidPtr(ctx.r4.u32))
+                {
+                    followPtr("r4+0    ", PPC_LOAD_U32(ctx.r4.u32 + 0));
+                    followPtr("r4+8    ", PPC_LOAD_U32(ctx.r4.u32 + 8));
+                    followPtr("r4+12   ", PPC_LOAD_U32(ctx.r4.u32 + 12));
+                }
             }
 
             return;
