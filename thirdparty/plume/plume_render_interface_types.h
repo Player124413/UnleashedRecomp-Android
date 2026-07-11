@@ -1883,6 +1883,10 @@ namespace plume {
         bool descriptorIndexing = false;
         bool scalarBlockLayout = false;
 
+        // BC1-BC7 sampled texture support. Universal on desktop, but absent on most
+        // mobile GPUs (Mali/PowerVR expose only ETC2/ASTC).
+        bool textureCompressionBC = false;
+
         // Buffers.
         bool bufferDeviceAddress = false;
 

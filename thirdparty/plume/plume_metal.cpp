@@ -3345,6 +3345,12 @@ namespace plume {
         capabilities.descriptorIndexing = true;
 #endif
         capabilities.scalarBlockLayout = true;
+#if PLUME_IOS
+        capabilities.textureCompressionBC = mtl->supportsBCTextureCompression();
+#else
+        // All macOS GPUs support BC.
+        capabilities.textureCompressionBC = true;
+#endif
         capabilities.bufferDeviceAddress = mtl->supportsFamily(MTL::GPUFamilyApple3);
         capabilities.presentWait = false;
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);

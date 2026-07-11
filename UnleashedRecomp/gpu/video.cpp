@@ -4,6 +4,9 @@
 #include "imgui/imgui_snapshot.h"
 #include "imgui/imgui_font_builder.h"
 
+#define BCDEC_IMPLEMENTATION
+#include <bcdec.h>
+
 #include <app.h>
 #include <bc_diff.h>
 #include <cpu/guest_thread.h>
@@ -1913,6 +1916,9 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
     g_capabilities = g_device->getCapabilities();
 
+    if (!g_capabilities.textureCompressionBC)
+        LOG_WARNING("BC texture formats are unsupported by this device. Textures will be decompressed on the CPU at load time, increasing memory usage.");
+
     LoadEmbeddedResources();
 
     constexpr uint64_t LowEndMemoryLimit = 2048ULL * 1024ULL * 1024ULL;
@@ -2580,6 +2586,7 @@ static void DrawProfiler()
 
         ImGui::Text("Present Wait: %s", g_capabilities.presentWait ? "Supported" : "Unsupported");
         ImGui::Text("Triangle Fan: %s", g_capabilities.triangleFan ? "Supported" : "Unsupported");
+        ImGui::Text("BC Textures: %s", g_capabilities.textureCompressionBC ? "Supported" : "CPU Decode");
         ImGui::Text("Dynamic Depth Bias: %s", g_capabilities.dynamicDepthBias ? "Supported" : "Unsupported");
         ImGui::Text("Triangle Strip Workaround: %s", g_triangleStripWorkaround ? "Enabled" : "Disabled");
         ImGui::Text("Hardware Resolve: %s", g_hardwareResolve ? "Enabled" : "Disabled");
@@ -5775,6 +5782,82 @@ static RenderFormat ConvertDXGIFormat(ddspp::DXGIFormat format)
     }
 }
 
+// CPU fallback for devices without BC sampled-image support (stock Mali/PowerVR drivers).
+// Decoded textures cost 4-8x the memory of the BC originals; an on-device transcode cache
+// to ETC2/EAC is the intended long-term replacement.
+struct BCnDecodeInfo
+{
+    RenderFormat decodedFormat;
+    uint32_t bytesPerPixel;
+    uint32_t blockSize;
+    void (*decodeBlock)(const void* compressedBlock, void* decompressedBlock, int destinationPitch);
+};
+
+static bool GetBCnDecodeInfo(RenderFormat format, BCnDecodeInfo& info)
+{
+    // There is no R8G8B8A8_UNORM_SRGB in RenderFormat, so sRGB variants decode to plain
+    // UNORM and lose the automatic sRGB-to-linear conversion on sampling. The base game
+    // only ships legacy DX9-style DDS (non-sRGB); this can only affect DX10-header mods.
+    static bool s_warnedSrgb;
+    switch (format)
+    {
+    case RenderFormat::BC1_UNORM_SRGB:
+    case RenderFormat::BC2_UNORM_SRGB:
+    case RenderFormat::BC3_UNORM_SRGB:
+    case RenderFormat::BC7_UNORM_SRGB:
+        if (!s_warnedSrgb)
+        {
+            s_warnedSrgb = true;
+            LOG_WARNING("Decoding sRGB BC texture to UNORM: sampling will return sRGB-encoded values.");
+        }
+        break;
+    case RenderFormat::BC4_SNORM:
+    case RenderFormat::BC5_SNORM:
+        LOG_WARNING("Decoding SNORM BC texture as UNORM; values will be biased.");
+        break;
+    default:
+        break;
+    }
+
+    switch (format)
+    {
+    case RenderFormat::BC1_TYPELESS:
+    case RenderFormat::BC1_UNORM:
+    case RenderFormat::BC1_UNORM_SRGB:
+        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC1_BLOCK_SIZE, &bcdec_bc1 };
+        return true;
+    case RenderFormat::BC2_TYPELESS:
+    case RenderFormat::BC2_UNORM:
+    case RenderFormat::BC2_UNORM_SRGB:
+        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC2_BLOCK_SIZE, &bcdec_bc2 };
+        return true;
+    case RenderFormat::BC3_TYPELESS:
+    case RenderFormat::BC3_UNORM:
+    case RenderFormat::BC3_UNORM_SRGB:
+        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC3_BLOCK_SIZE, &bcdec_bc3 };
+        return true;
+    case RenderFormat::BC4_TYPELESS:
+    case RenderFormat::BC4_UNORM:
+    case RenderFormat::BC4_SNORM:
+        info = { RenderFormat::R8_UNORM, 1, BCDEC_BC4_BLOCK_SIZE, &bcdec_bc4 };
+        return true;
+    case RenderFormat::BC5_TYPELESS:
+    case RenderFormat::BC5_UNORM:
+    case RenderFormat::BC5_SNORM:
+        info = { RenderFormat::R8G8_UNORM, 2, BCDEC_BC5_BLOCK_SIZE, &bcdec_bc5 };
+        return true;
+    case RenderFormat::BC7_TYPELESS:
+    case RenderFormat::BC7_UNORM:
+    case RenderFormat::BC7_UNORM_SRGB:
+        info = { RenderFormat::R8G8B8A8_UNORM, 4, BCDEC_BC7_BLOCK_SIZE, &bcdec_bc7 };
+        return true;
+    default:
+        // BC6H stays unsupported: bcdec only emits 3-channel RGB floats for it and no
+        // known game or mod content uses it.
+        return false;
+    }
+}
+
 static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataSize, RenderComponentMapping componentMapping, bool forceCubeMap = false)
 {
     ddspp::Descriptor ddsDesc;
@@ -5792,6 +5875,19 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
         desc.arraySize = arraySize;
         desc.format = ConvertDXGIFormat(ddsDesc.format);
         desc.flags = ddsDesc.type == ddspp::TextureType::Cubemap ? RenderTextureFlag::CUBE : RenderTextureFlag::NONE;
+
+        BCnDecodeInfo bcDecode{};
+        const bool decodeBC = !g_capabilities.textureCompressionBC && ddsDesc.blockWidth > 1;
+        if (decodeBC)
+        {
+            if (!GetBCnDecodeInfo(desc.format, bcDecode))
+            {
+                LOGF_ERROR("Cannot load a BC-compressed texture (RenderFormat {}) on a device without BC texture support.", uint32_t(desc.format));
+                return false;
+            }
+
+            desc.format = bcDecode.decodedFormat;
+        }
 
         if (forceCubeMap)
         {
@@ -5830,6 +5926,7 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
             uint32_t srcRowPitch;
             uint32_t dstRowPitch;
             uint32_t rowCount;
+            uint32_t dstRowCount;
         };
 
         std::vector<Slice> slices;
@@ -5849,23 +5946,65 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
                 slice.dstOffset = curDstOffset;
                 uint32_t rowPitch = ((slice.width + ddsDesc.blockWidth - 1) / ddsDesc.blockWidth) * ddsDesc.bitsPerPixelOrBlock;
                 slice.srcRowPitch = (rowPitch + 7) / 8;
-                slice.dstRowPitch = (slice.srcRowPitch + PITCH_ALIGNMENT - 1) & ~(PITCH_ALIGNMENT - 1);
                 slice.rowCount = (slice.height + ddsDesc.blockHeight - 1) / ddsDesc.blockHeight;
 
+                if (decodeBC)
+                {
+                    // The upload buffer holds decoded pixels instead of the source BC blocks.
+                    slice.dstRowPitch = (slice.width * bcDecode.bytesPerPixel + PITCH_ALIGNMENT - 1) & ~(PITCH_ALIGNMENT - 1);
+                    slice.dstRowCount = slice.height;
+                }
+                else
+                {
+                    slice.dstRowPitch = (slice.srcRowPitch + PITCH_ALIGNMENT - 1) & ~(PITCH_ALIGNMENT - 1);
+                    slice.dstRowCount = slice.rowCount;
+                }
+
                 curSrcOffset += slice.srcRowPitch * slice.rowCount * slice.depth;
-                curDstOffset += (slice.dstRowPitch * slice.rowCount * slice.depth + PLACEMENT_ALIGNMENT - 1) & ~(PLACEMENT_ALIGNMENT - 1);
+                curDstOffset += (slice.dstRowPitch * slice.dstRowCount * slice.depth + PLACEMENT_ALIGNMENT - 1) & ~(PLACEMENT_ALIGNMENT - 1);
             }
         }
 
         auto uploadBuffer = g_device->createBuffer(RenderBufferDesc::UploadBuffer(curDstOffset));
         uint8_t* mappedMemory = reinterpret_cast<uint8_t*>(uploadBuffer->map());
 
+        std::vector<uint8_t> decodeTemp;
         for (auto& slice : slices)
         {
             const uint8_t* srcData = data + ddsDesc.headerSize + slice.srcOffset;
             uint8_t* dstData = mappedMemory + slice.dstOffset;
 
-            if (slice.srcRowPitch == slice.dstRowPitch)
+            if (decodeBC)
+            {
+                // Decode into a buffer rounded up to whole 4x4 blocks, then copy the exact
+                // pixel rows: edge blocks always write a full 4x4 pixel area, which could
+                // otherwise run past this slice's region in the upload buffer.
+                const uint32_t blocksX = (slice.width + 3) / 4;
+                const uint32_t blocksY = slice.rowCount;
+                const uint32_t tmpPitch = blocksX * 4 * bcDecode.bytesPerPixel;
+                decodeTemp.resize(size_t(tmpPitch) * blocksY * 4);
+
+                for (uint32_t z = 0; z < slice.depth; z++)
+                {
+                    const uint8_t* srcSlice = srcData + size_t(z) * slice.srcRowPitch * blocksY;
+
+                    for (uint32_t blockY = 0; blockY < blocksY; blockY++)
+                    {
+                        for (uint32_t blockX = 0; blockX < blocksX; blockX++)
+                        {
+                            bcDecode.decodeBlock(
+                                srcSlice + size_t(blockY) * slice.srcRowPitch + size_t(blockX) * bcDecode.blockSize,
+                                decodeTemp.data() + size_t(blockY) * 4 * tmpPitch + size_t(blockX) * 4 * bcDecode.bytesPerPixel,
+                                int(tmpPitch));
+                        }
+                    }
+
+                    uint8_t* dstSlice = dstData + size_t(z) * slice.dstRowPitch * slice.height;
+                    for (uint32_t row = 0; row < slice.height; row++)
+                        memcpy(dstSlice + size_t(row) * slice.dstRowPitch, decodeTemp.data() + size_t(row) * tmpPitch, size_t(slice.width) * bcDecode.bytesPerPixel);
+                }
+            }
+            else if (slice.srcRowPitch == slice.dstRowPitch)
             {
                 memcpy(dstData, srcData, slice.srcRowPitch * slice.rowCount * slice.depth);
             }
@@ -5888,9 +6027,13 @@ static bool LoadTexture(GuestTexture& texture, const uint8_t* data, size_t dataS
 
                 auto copyTextureRegion = [&](Slice& slice, uint32_t subresourceIndex)
                     {
+                        uint32_t footprintRowWidth = decodeBC
+                            ? slice.dstRowPitch / bcDecode.bytesPerPixel
+                            : (slice.dstRowPitch * 8) / ddsDesc.bitsPerPixelOrBlock * ddsDesc.blockWidth;
+
                         g_copyCommandList->copyTextureRegion(
                             RenderTextureCopyLocation::Subresource(texture.texture, subresourceIndex % ddsDesc.numMips, subresourceIndex / ddsDesc.numMips),
-                            RenderTextureCopyLocation::PlacedFootprint(uploadBuffer.get(), desc.format, slice.width, slice.height, slice.depth, (slice.dstRowPitch * 8) / ddsDesc.bitsPerPixelOrBlock * ddsDesc.blockWidth, slice.dstOffset));
+                            RenderTextureCopyLocation::PlacedFootprint(uploadBuffer.get(), desc.format, slice.width, slice.height, slice.depth, footprintRowWidth, slice.dstOffset));
                     };
 
                 for (size_t i = 0; i < slices.size(); i++)

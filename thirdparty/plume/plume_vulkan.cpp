@@ -4259,6 +4259,7 @@ namespace plume {
         capabilities.resolveModes = false;
         capabilities.descriptorIndexing = descriptorIndexing;
         capabilities.scalarBlockLayout = scalarBlockLayout;
+        capabilities.textureCompressionBC = deviceFeatures.features.textureCompressionBC;
         capabilities.bufferDeviceAddress = bufferDeviceAddress;
         capabilities.presentWait = presentWait;
         capabilities.displayTiming = supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end();

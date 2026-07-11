@@ -3811,6 +3811,8 @@ namespace plume {
         // Fill capabilities.
         capabilities.descriptorIndexing = true;
         capabilities.scalarBlockLayout = true;
+        // BC formats are mandatory in D3D12.
+        capabilities.textureCompressionBC = true;
         capabilities.bufferDeviceAddress = true;
         capabilities.presentWait = true;
         capabilities.queryPools = true;
