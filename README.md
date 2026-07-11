@@ -44,7 +44,7 @@ For the smoothest first run, start with the default graphics settings. The Andro
 2. Allow your browser or file manager to install apps from unknown sources when Android asks.
 3. Install and launch **UnleashedRecomp** once. The first launch creates the app's folders and prepares the bundled graphics driver.
 4. If the game reports that its files are missing, open Android's Files app and choose **Unleashed Recomp game files**.
-5. Copy the `game`, `update`, and optional `dlc` folders from your legal dump into the folder shown by the app.
+5. Copy the `game`, `update`, `patched`, and optional `dlc` folders from your legal dump into the folder shown by the app.
 6. Close and reopen the game.
 
 Do not use `adb push` directly into `Android/data`. Files created there by the shell can receive ownership that prevents the app from reading them. Use the system Files interface exposed by the app instead.
