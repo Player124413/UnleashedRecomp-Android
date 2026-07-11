@@ -23,7 +23,15 @@ Memory::Memory()
     if (base == nullptr)
         return;
 
+#ifdef __ANDROID__
+    // DIAGNOSTIC BUILD (issue #27): keep the guest null page readable and writable so
+    // the corrupted animation-node pointers (0 / -1) read zeros instead of faulting.
+    // The crash otherwise just moves between consumers of the same broken state
+    // (sub_82F77188, sub_82F4BCA8, sub_82F76698). Test-only - masks every null deref;
+    // must not ship in a release build.
+#else
     mprotect(base, 4096, PROT_NONE);
+#endif
 #endif
 
     for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)

@@ -204,6 +204,15 @@ PPC_FUNC(sub_824EE620)
 // which reads guest address 0x5B..0x5C and crashes. Root cause unknown (likely an
 // unbound animation track); skip the evaluation instead of crashing and log the state
 // so reports tell us how often it fires.
+static std::string DumpGuestWords(uint8_t* base, uint32_t addr, size_t count)
+{
+    std::string words;
+    for (size_t i = 0; i < count; i++)
+        words += fmt::format("{:08X} ", PPC_LOAD_U32(addr + uint32_t(i * 4)));
+
+    return words;
+}
+
 PPC_FUNC_IMPL(__imp__sub_82F77188);
 PPC_FUNC(sub_82F77188)
 {
@@ -219,11 +228,25 @@ PPC_FUNC(sub_82F77188)
         if (invalidPtr(dataA) || invalidPtr(dataB))
         {
             static std::atomic<uint32_t> s_reportCount{ 0 };
-            if (s_reportCount.fetch_add(1, std::memory_order_relaxed) < 8)
+            uint32_t report = s_reportCount.fetch_add(1, std::memory_order_relaxed);
+            if (report < 8)
             {
                 LOGFN_ERROR("sub_82F77188: skipping type-4 node with invalid data "
                     "(this={:08X} childA={:08X} dataA={:08X} childB={:08X} dataB={:08X})",
                     ctx.r3.u32, childA, dataA, childB, dataB);
+            }
+
+            // Full node/child dumps for the first two reports: the leading words carry
+            // vtable pointers and slot indices that identify the class and asset.
+            if (report < 2)
+            {
+                LOGFN_ERROR("  this   @{:08X}: {}", ctx.r3.u32, DumpGuestWords(base, ctx.r3.u32, 12));
+                if (!invalidPtr(childA))
+                    LOGFN_ERROR("  childA @{:08X}: {}", childA, DumpGuestWords(base, childA, 12));
+                if (!invalidPtr(childB))
+                    LOGFN_ERROR("  childB @{:08X}: {}", childB, DumpGuestWords(base, childB, 12));
+                if (!invalidPtr(ctx.r4.u32))
+                    LOGFN_ERROR("  arg r4 @{:08X}: {}", ctx.r4.u32, DumpGuestWords(base, ctx.r4.u32, 12));
             }
 
             return;
