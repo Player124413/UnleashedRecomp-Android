@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.0 (2026-07-13)
+
+### The "ring crash" fixed (issue #27)
+
+The crash that hit some devices the moment Sonic touched a ring — and could also appear as random freezes, crashes seconds into gameplay, or hangs at scripted moments — has been root-caused and fixed. It turned out to be a use-after-free in the game's own animation/physics code that the Xbox 360's execution timing masked: a node object is destroyed while a live parent still references it, the allocator hands its memory to animation transform data within milliseconds, and worker threads then read those floats as pointers. Whether this corrupted anything depended entirely on OS scheduler timing, which is why identical phones on different firmware behaved differently and no hardware pattern ever fit. Three cooperating patches make the lifetime bug harmless:
+
+- Freed small allocator blocks are quarantined and poisoned instead of being reused immediately, so a dangling reference reads a deterministic "destroyed" marker instead of someone else's fresh data.
+- The animation-node clone routine no longer propagates dangling child pointers into new node generations or writes through their stale registration tables — this was the amplifier that turned one stale pointer into widespread heap corruption.
+- The node evaluator (shipped in 0.4.0) skips nodes whose data reads as destroyed.
+
+This also retroactively explains the long-standing reports of the game freezing at the first Werehog door and similar scripted spots on some devices — same bug, different symptom. Huge thanks to the testers in issue #27 who ran nine diagnostic builds to pin this down.
+
+### Install the game and mods straight from the app
+
+- **Install game files (.zip / folder)** in the launcher's Game files card: pick your game dump as a ZIP archive or a folder through the system file picker and the app copies everything into place in the background, with progress and cancel. The dump's layout is detected automatically no matter how deeply the folders are nested in the archive.
+- **Raw dumps are now bootable without a PC**: if the `patched` folder produced by the desktop installer is missing, the app builds the patched executable itself from `game` + `update` on first launch.
+- **Install a mod (.zip / folder)** in the Mods card: mod archives are unpacked into the right place with every contained mod detected by its `mod.ini` — multi-mod archives install in one go.
+
+### Smarter touch controls
+
+- **Menus show a D-pad.** On the title screen, in menus, on the world map and in the pause menu, the left analog stick turns into an 8-way D-pad — navigating game menus no longer fights the analog deadzone — and the touch camera is released so it cannot swallow taps.
+- **Cutscenes show a single SKIP button.** During in-engine cutscenes every control collapses into one wide SKIP button; the full layout returns the moment gameplay resumes.
+
+### New graphics options for low-end devices
+
+- **Texture Quality** (Video: Full / Half / Quarter): serves every game texture from further down its own mip chain at load time. Half/Quarter cut texture memory and GPU sampling bandwidth roughly 4x/16x — what low-end texture-pack mods achieve with hundreds of megabytes of repacked archives, applied to the base game, DLC, mods and cutscenes alike with zero extra files. UI and fonts keep full resolution.
+- **Planar Reflections** toggle (Video): turning it off skips the entire reflection scene render pass on stages with reflective surfaces (towns, water) — those stages effectively stop rendering the scene twice.
+- **Shadow Resolution 256**: a new lowest step below 512 for the weakest GPUs.
+- The Video menu no longer lists desktop-only options that did nothing on a phone (Window Size, Monitor, Fullscreen, VSync), and Input no longer shows Allow Background Input.
+
+### App translations
+
+- The launcher, mod manager, installer and file-provider UI are now available in Japanese, German, French, Spanish and Italian — matching the game's supported languages — plus Portuguese for the Brazilian community. The app follows the system (or per-app) language setting.
+
+### Fixes
+
+- Large mods no longer hide themselves and other mods from the mod manager (issue #58). The scanner used to spend its file budget inside a big mod's content folders before ever reading its `mod.ini`; Low End Mod (2494 files) reliably triggered this. Mods now cost a handful of scanned files regardless of size.
+- Restored the original Sonic artwork as the launcher icon, now properly filling the adaptive-icon canvas on modern launchers (no more small square in a white circle, no more black plate) with a matching monochrome themed icon.
+
 ## 0.4.0 (2026-07-12)
 
 ### Touch camera control (issue #50)
