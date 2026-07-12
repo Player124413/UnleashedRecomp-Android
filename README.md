@@ -175,6 +175,10 @@ The Android-specific implementation lives primarily in:
 - `thirdparty/SDL/`
 - `UnleashedRecomp/ui/touch_controls.*`
 
+## AI-assisted development
+
+A large part of this port was written in collaboration with AI tools — primarily Anthropic's Claude (Fable 5) model. The workflow is human-led: the maintainers set the direction, test every build on real devices, debug with testers, and decide what ships; the AI does much of the code writing, crash analysis, and reverse engineering under that guidance. It has proven effective but it also means occasional artifacts, freezes, or audio issues can slip through. Detailed bug reports with `log.txt` attached are the most valuable contribution: they are how problems get root-caused and fixed.
+
 ## Legal
 
 This repository contains no *Sonic Unleashed* game assets. It is not affiliated with or endorsed by SEGA, Microsoft, the upstream Unleashed Recompiled team, Mesa, or Qualcomm.
@@ -193,4 +197,5 @@ This port exists because many people shared code, testing time, traces, hardware
 - Mesa's Freedreno/Turnip developers — the open-source Vulkan driver that makes the port practical on Adreno hardware
 - [bylaws/libadrenotools](https://github.com/bylaws/libadrenotools) and the Android driver community — runtime custom-driver loading
 - [Vauzi-17/710](https://github.com/Vauzi-17/710) and whitebelyash/AdrenoToolsDrivers — community Adreno 710/720/722 device information
+- Anthropic's Claude (Fable 5) — AI pair programming across the port: code, crash analysis, and reverse engineering under maintainer guidance
 - Everyone who tested unfinished builds, captured logs, reproduced GPU bugs, and reported what happened
