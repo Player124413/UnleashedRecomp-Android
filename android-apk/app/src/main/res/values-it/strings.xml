@@ -80,7 +80,7 @@
     <string name="error_install_no_mod">L\'origine selezionata non contiene alcun mod.ini, quindi non è stata trovata nessuna mod.</string>
 
     <string-array name="driver_labels">
-        <item>Auto (consigliato)</item><item>Sistema</item><item>Turnip incluso</item><item>Adreno 710 (Vauzi)</item><item>Importato</item>
+        <item>Auto (consigliato)</item><item>Sistema</item><item>Turnip incluso</item><item>Adreno 710 (Vauzi)</item><item>A725 Performance (sperimentale; sysmem+nobin)</item><item>Importato</item>
     </string-array>
     <string-array name="render_mode_labels">
         <item>Auto (consigliato)</item><item>GMEM</item><item>Sysmem</item>

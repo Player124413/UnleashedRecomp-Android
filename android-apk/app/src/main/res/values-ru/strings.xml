@@ -18,6 +18,12 @@
     <string name="mod_manager_error_directory">Не удалось создать каталог настроек: %1$s</string>
     <string name="mod_manager_error_save">Не удалось сохранить базу модов: %1$s</string>
     <string name="mod_manager_error_files">Не удалось открыть системное приложение «Файлы».</string>
+    <string name="mod_settings_title">Настройки мода</string>
+    <string name="mod_settings_open">Настроить %1$s</string>
+    <string name="mod_settings_save">Сохранить настройки мода</string>
+    <string name="mod_settings_saved">Настройки мода сохранены. Перезапустите игру для их применения.</string>
+    <string name="mod_settings_empty">В ConfigSchemaFile нет поддерживаемых настроек.</string>
+    <string name="mod_settings_error">Не удалось изменить настройки мода: %1$s</string>
 
     <string name="launcher_title">Unleashed Recomp</string>
     <string name="launcher_subtitle">Проверьте установку и настройте игру перед запуском.</string>
@@ -69,11 +75,14 @@
     <string name="launcher_install_mod">Установить мод (.zip / папка)</string>
     <string name="install_source_zip">Из ZIP-архива</string>
     <string name="install_source_folder">Из папки</string>
+    <string name="install_source_iso_packages">Из ISO / файлов обновления / DLC</string>
     <string name="install_progress_title">Установка…</string>
     <string name="install_progress_status">Скопировано файлов: %1$d, %2$s</string>
     <string name="install_scanning">Чтение источника…</string>
     <string name="install_cancel">Отмена</string>
     <string name="install_done_game">Файлы игры установлены. Пропатченный исполняемый файл при необходимости будет создан автоматически при первом запуске.</string>
+    <string name="install_done_iso_staged">Файлы установщика подготовлены. Нажмите «Запустить игру», чтобы проверить и установить основную игру, обновление и необязательные DLC.</string>
+    <string name="launcher_install_staged">Файлы установщика готовы. Запустите игру для их проверки и установки.</string>
     <string name="install_done_mod">Установлено модов: %1$d. Включите их в менеджере модов.</string>
     <string name="install_cancelled">Установка отменена. Частично скопированные файлы остались на месте.</string>
     <string name="error_install_failed">Установка не удалась: %1$s</string>
@@ -81,7 +90,7 @@
     <string name="error_install_no_mod">В выбранном источнике нет mod.ini — мод не найден.</string>
 
     <string-array name="driver_labels">
-        <item>Авто (рекомендуется)</item><item>Системный</item><item>Встроенный Turnip</item><item>Adreno 710 (Vauzi)</item><item>Импортированный</item>
+        <item>Авто (рекомендуется)</item><item>Системный</item><item>Встроенный Turnip</item><item>Adreno 710 (Vauzi)</item><item>A725 Performance (эксперимент; sysmem+nobin)</item><item>Импортированный</item>
     </string-array>
     <string-array name="render_mode_labels">
         <item>Авто (рекомендуется)</item><item>GMEM</item><item>Sysmem</item>
@@ -103,4 +112,19 @@
     <string name="launcher_localization">Фанатская локализация</string>
     <string name="launcher_localization_none">Нет (оригинальная игра)</string>
     <string name="launcher_localization_summary">Выберите необязательный пакет из localizations/. Его файлы подменят ресурсы базового языка, не изменяя исходный дамп игры.</string>
+    <string name="launcher_updates">Обновления приложения</string>
+    <string name="update_current_version">Установлена версия: %1$s</string>
+    <string name="update_check">Проверить обновления</string>
+    <string name="update_checking">Проверяем обновления на GitHub…</string>
+    <string name="update_error">Не удалось проверить обновления: %1$s</string>
+    <string name="update_up_to_date">Установлена актуальная версия %1$s.</string>
+    <string name="update_up_to_date_short">У вас уже установлена последняя версия.</string>
+    <string name="update_available">Доступна версия %1$s.</string>
+    <string name="update_dialog_title">Доступно обновление</string>
+    <string name="update_dialog_message">Версия %1$s (%2$s) готова к загрузке.\n\n%3$s</string>
+    <string name="update_later">Позже</string>
+    <string name="update_download">Скачать</string>
+    <string name="update_downloading">Загрузка обновления…</string>
+    <string name="update_download_progress">Скачано %1$s из %2$s</string>
+    <string name="update_ready_to_install">Обновление скачано. Продолжите в системном установщике Android.</string>
 </resources>

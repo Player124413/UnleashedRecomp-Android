@@ -326,61 +326,74 @@ int main(int argc, char *argv[])
 
     HostStartup();
 
-// ISO Dumper
+    std::filesystem::path modulePath;
+
 #ifdef __ANDROID__
-{
-    std::filesystem::path root = GetGamePath();
-    std::filesystem::path stagingDir = root / "to_install";
-    std::error_code ec;
-    if (std::filesystem::exists(stagingDir, ec) && !Installer::checkGameInstall(root, modulePath))
+    // PR #78: install a base-game ISO/container, title update and optional DLC
+    // packages staged by the Android launcher. Keep the staging directory on
+    // failure so the user can correct the source set without copying it again.
     {
-        Installer::Input input;
-        // locate the .iso or game folder inside stagingDir
-        for (auto& entry : std::filesystem::directory_iterator(stagingDir, ec))
+        const std::filesystem::path root = GetGamePath();
+        const std::filesystem::path stagingDir = root / "to_install";
+        std::error_code ec;
+        const bool hasStaging = std::filesystem::is_directory(stagingDir, ec);
+        const bool gameAlreadyInstalled = Installer::checkGameInstall(root, modulePath);
+        if (hasStaging && !gameAlreadyInstalled)
         {
-            if (Installer::parseGame(entry.path()))
-                input.gameSource = entry.path();
-            else if (Installer::parseUpdate(entry.path()))
-                input.updateSource = entry.path();
-            else if (Installer::parseDLC(entry.path()) != DLC::Unknown)
-                input.dlcSources.push_back(entry.path());
-        }
+            Installer::Input input;
+            for (std::filesystem::directory_iterator it(stagingDir, ec), end; !ec && it != end; it.increment(ec))
+            {
+                const std::filesystem::path source = it->path();
+                if (input.gameSource.empty() && Installer::parseGame(source))
+                    input.gameSource = source;
+                else if (input.updateSource.empty() && Installer::parseUpdate(source))
+                    input.updateSource = source;
+                else if (Installer::parseDLC(source) != DLC::Unknown)
+                    input.dlcSources.push_back(source);
+            }
 
-        Installer::Journal journal;
-        Installer::Sources sources;
-        bool installSucceeded = false;
+            Journal journal;
+            Installer::Sources sources;
+            bool installSucceeded = false;
+            if (ec)
+            {
+                journal.lastErrorMessage = "Unable to enumerate the staged installer files: " + ec.message();
+            }
+            else if (input.gameSource.empty() || input.updateSource.empty())
+            {
+                journal.lastErrorMessage = "The staged files must contain both the base game and its title update.";
+            }
+            else if (Installer::parseSources(input, journal, sources))
+            {
+                installSucceeded = Installer::install(sources, root, false, journal,
+                    std::chrono::seconds(0), []() { return true; });
+            }
 
-        if (Installer::parseSources(input, journal, sources))
-        {
-           installSucceeded = Installer::install(sources, root, /*skipHashChecks*/ false, journal,
-               std::chrono::seconds(0), []() { return true; });
-        }
+            if (installSucceeded)
+            {
+                std::error_code removeEc;
+                std::filesystem::remove_all(stagingDir, removeEc);
+                if (removeEc)
+                    LOGFN_WARNING("Failed to remove ISO staging directory after installation: {}", removeEc.message());
 
-        if (installSucceeded)
-        {
-            std::error_code removeEc;
-            std::filesystem::remove_all(stagingDir, removeEc);
-            
-            if (removeEc)
-               LOGN_WARNING("Failed to remove staging directory after install: {}", removeEc.message());
-
-            char resultText[512];
-            snprintf(resultText, sizeof(resultText), "%s", Localise("IntegrityCheck_Success").c_str());
-            fprintf(stdout, "%s\n", resultText);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GameWindow::GetTitle(), resultText, GameWindow::s_pWindow);
-        }
-        else
-        {
-            Installer::rollback(journal);
-
-            char resultText[512];
-            snprintf(resultText, sizeof(resultText), Localise("IntegrityCheck_Failed").c_str(), journal.lastErrorMessage.c_str());
-            fprintf(stderr, "%s\n", resultText);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), resultText, GameWindow::s_pWindow);
-            std::_Exit(int(journal.lastResult));
+                const std::string resultText = Localise("IntegrityCheck_Success");
+                LOG("Installed the staged Android ISO/package sources successfully.");
+                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GameWindow::GetTitle(),
+                    resultText.c_str(), GameWindow::s_pWindow);
+            }
+            else
+            {
+                Installer::rollback(journal);
+                const std::string reason = journal.lastErrorMessage.empty()
+                    ? "Unable to parse or install the staged game sources."
+                    : journal.lastErrorMessage;
+                LOGFN_ERROR("Android ISO/package installation failed: {}", reason);
+                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(),
+                    reason.c_str(), GameWindow::s_pWindow);
+                std::_Exit(1);
+            }
         }
     }
-}
 #endif
 
 #ifdef __ANDROID__
@@ -408,7 +421,6 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    std::filesystem::path modulePath;
     bool isGameInstalled = Installer::checkGameInstall(GetGamePath(), modulePath);
     bool runInstallerWizard = forceInstaller || forceDLCInstaller || !isGameInstalled;
     if (runInstallerWizard)
@@ -438,6 +450,7 @@ int main(int argc, char *argv[])
                 "%s/to_install\n\n"
                 "The folder is accessible from a PC over a USB cable.\n"
                 "Restart the app after copying.",
+                (const char *)GetGamePath().u8string().c_str(),
                 (const char *)GetGamePath().u8string().c_str());
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GameWindow::GetTitle(), text, GameWindow::s_pWindow);
         }

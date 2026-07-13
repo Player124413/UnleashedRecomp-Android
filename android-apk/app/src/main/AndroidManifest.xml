@@ -46,6 +46,10 @@
     <!-- Allow access to the vibrator -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- GitHub release checks and hand-off to Android's package installer. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- if you want to capture audio, uncomment this. -->
     <!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->
 
@@ -115,6 +119,12 @@
             android:exported="false"
             android:theme="@style/ModManagerTheme" />
 
+        <activity
+            android:name=".ModSettingsActivity"
+            android:label="@string/mod_settings_title"
+            android:exported="false"
+            android:theme="@style/ModManagerTheme" />
+
         <!-- Expose app-owned game files through Android's Storage Access Framework.
              MANAGE_DOCUMENTS is a signature permission: only the system DocumentsUI can
              browse the provider directly, and it grants callers narrow URI permissions. -->
@@ -128,6 +138,14 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+
+        <!-- Serves only cache/updates/UnleashedRecomp_update.apk, read-only, after
+             UpdateManager verifies its GitHub digest and signing certificate. -->
+        <provider
+            android:name=".UpdateFileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

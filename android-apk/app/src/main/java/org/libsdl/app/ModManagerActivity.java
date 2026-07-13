@@ -81,12 +81,15 @@ public final class ModManagerActivity extends Activity {
         final File iniFile;
         final String canonicalPath;
         final String title;
+        final File configSchemaFile;
         boolean enabled;
 
-        ModEntry(File iniFile, String canonicalPath, String title) {
+        ModEntry(File iniFile, String canonicalPath, String title,
+                File configSchemaFile) {
             this.iniFile = iniFile;
             this.canonicalPath = canonicalPath;
             this.title = title;
+            this.configSchemaFile = configSchemaFile;
         }
     }
 
@@ -206,7 +209,8 @@ public final class ModManagerActivity extends Activity {
             File iniFile = new File(path);
             Map<String, Map<String, String>> ini = readIni(iniFile);
             if (iniFile.isFile() && isSupportedModIni(ini)) {
-                discovered.put(path, new ModEntry(iniFile, path, findTitle(iniFile, ini)));
+                discovered.put(path, new ModEntry(iniFile, path, findTitle(iniFile, ini),
+                    findConfigSchema(iniFile, ini)));
             }
         }
 
@@ -267,7 +271,8 @@ public final class ModManagerActivity extends Activity {
                     canonicalPath.indexOf('"') >= 0) {
                     continue;
                 }
-                result.put(canonicalPath, new ModEntry(child, canonicalPath, findTitle(child, ini)));
+                result.put(canonicalPath, new ModEntry(child, canonicalPath, findTitle(child, ini),
+                    findConfigSchema(child, ini)));
                 foundModHere = true;
             } catch (IOException ignored) {
                 // A path that cannot be canonicalised cannot be handed safely to ModLoader.
@@ -347,6 +352,14 @@ public final class ModManagerActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
 
             final int rowIndex = index;
+            if (entry.configSchemaFile != null) {
+                Button settings = new Button(this);
+                settings.setText("⚙");
+                settings.setContentDescription(getString(R.string.mod_settings_open, entry.title));
+                settings.setOnClickListener(view -> openModSettings(entry));
+                row.addView(settings, squareButton());
+            }
+
             Button up = new Button(this);
             up.setText("↑");
             up.setEnabled(index > 0);
@@ -363,6 +376,32 @@ public final class ModManagerActivity extends Activity {
         }
 
         addCodesSection();
+    }
+
+    private void openModSettings(ModEntry entry) {
+        Intent intent = new Intent(this, ModSettingsActivity.class);
+        intent.putExtra(ModSettingsActivity.EXTRA_TITLE, entry.title);
+        intent.putExtra(ModSettingsActivity.EXTRA_ROOT, entry.iniFile.getParentFile().getAbsolutePath());
+        intent.putExtra(ModSettingsActivity.EXTRA_SCHEMA, entry.configSchemaFile.getAbsolutePath());
+        startActivity(intent);
+    }
+
+    private static File findConfigSchema(File modIni,
+            Map<String, Map<String, String>> ini) {
+        Map<String, String> main = ini.get("Main");
+        String relative = main != null ? main.get("ConfigSchemaFile") : null;
+        if (relative == null || relative.trim().isEmpty()) return null;
+        try {
+            File root = modIni.getParentFile().getCanonicalFile();
+            File schema = new File(root, relative.trim()).getCanonicalFile();
+            if (!schema.getPath().startsWith(root.getPath() + File.separator) ||
+                    !schema.isFile() || schema.length() <= 0 || schema.length() > 1024 * 1024) {
+                return null;
+            }
+            return schema;
+        } catch (IOException exception) {
+            return null;
+        }
     }
 
     // Built-in cheat/patch codes (issue #75). The native ModLoader reads these from the

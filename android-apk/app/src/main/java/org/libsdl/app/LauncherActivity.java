@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -45,6 +46,15 @@ public final class LauncherActivity extends Activity {
     private static final int REQUEST_GAME_TREE = 1003;
     private static final int REQUEST_MOD_ZIP = 1004;
     private static final int REQUEST_MOD_TREE = 1005;
+    private static final int REQUEST_GAME_PACKAGES = 1006;
+    private static final int DRIVER_EXPERIMENTAL_A725 = 4;
+    private static final int DRIVER_IMPORTED = 5;
+    private static final int RENDER_MODE_SYSMEM = 2;
+    private static final long UPDATE_CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000;
+    private static final String[] DRIVER_VALUES = {
+        "Auto", "System", "Bundled", "Vauzi710", "ExperimentalA725", "Imported"
+    };
+    private static final String[] RENDER_MODE_VALUES = {"Auto", "GMEM", "Sysmem"};
     private static final String[] DLC_DIRECTORIES = {
         "Apotos & Shamar Adventure Pack", "Chun-nan Adventure Pack",
         "Empire City & Adabat Adventure Pack", "Holoska Adventure Pack",
@@ -54,7 +64,9 @@ public final class LauncherActivity extends Activity {
     private TextView installStatus;
     private TextView driverStatus;
     private TextView diagnosticsStatus;
+    private TextView updateStatus;
     private Button playButton;
+    private Button updateButton;
     private Spinner driverSpinner;
     private Spinner renderSpinner;
     private CheckBox skipIntro;
@@ -79,11 +91,13 @@ public final class LauncherActivity extends Activity {
         prefs = getPreferences(MODE_PRIVATE);
         setContentView(buildPage());
         loadSettings();
+        maybeCheckForUpdates();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        UpdateManager.resumePendingInstall(this);
         refreshStatuses();
     }
 
@@ -111,6 +125,14 @@ public final class LauncherActivity extends Activity {
         files.addView(button(R.string.launcher_open_saves, view -> openFiles("save")));
         page.addView(files);
 
+        LinearLayout updates = card(R.string.launcher_updates);
+        updateStatus = statusText();
+        updateStatus.setText(getString(R.string.update_current_version, UpdateManager.currentVersion(this)));
+        updates.addView(updateStatus);
+        updateButton = button(R.string.update_check, view -> checkForUpdates(true));
+        updates.addView(updateButton);
+        page.addView(updates);
+
         LinearLayout graphics = collapsibleCard(page, R.string.launcher_graphics, "expand_graphics", false);
         driverStatus = statusText();
         graphics.addView(driverStatus);
@@ -118,6 +140,17 @@ public final class LauncherActivity extends Activity {
             R.array.driver_labels);
         renderSpinner = settingSpinner(graphics, R.string.launcher_render_mode,
             R.array.render_mode_labels);
+        driverSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                applyDriverPresetToLauncher();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                applyDriverPresetToLauncher();
+            }
+        });
         LinearLayout driverButtons = row();
         driverButtons.addView(button(R.string.launcher_import_driver, view -> chooseDriver()), weighted());
         driverButtons.addView(button(R.string.launcher_driver_folder, view -> openFiles("transfer")), weighted());
@@ -163,9 +196,13 @@ public final class LauncherActivity extends Activity {
 
     private void refreshStatuses() {
         lastInstallState = inspectInstallation();
-        installStatus.setText(lastInstallState.message);
-        installStatus.setTextColor(lastInstallState.ready ? Color.rgb(25, 120, 55) : Color.rgb(180, 45, 35));
-        playButton.setEnabled(lastInstallState.ready);
+        boolean stagedInstall = hasStagedGamePackages();
+        installStatus.setText(stagedInstall && !lastInstallState.ready
+            ? getString(R.string.launcher_install_staged)
+            : lastInstallState.message);
+        installStatus.setTextColor(lastInstallState.ready ? Color.rgb(25, 120, 55)
+            : stagedInstall ? Color.rgb(180, 110, 20) : Color.rgb(180, 45, 35));
+        playButton.setEnabled(lastInstallState.ready || stagedInstall);
 
         File installedMarker = new File(getFilesDir(), "turnip/last_imported_driver.txt");
         File recoveryMarker = new File(getFilesDir(), "turnip/vulkan_startup_state.txt");
@@ -246,10 +283,9 @@ public final class LauncherActivity extends Activity {
 
     private void loadSettings() {
         Map<String, String> config = readConfig(AppStorage.configFile(this));
-        select(driverSpinner, config.get("Video.VulkanDriver"),
-            new String[] {"Auto", "System", "Bundled", "Vauzi710", "Imported"});
-        select(renderSpinner, config.get("Video.RenderMode"),
-            new String[] {"Auto", "GMEM", "Sysmem"});
+        select(driverSpinner, config.get("Video.VulkanDriver"), DRIVER_VALUES);
+        select(renderSpinner, config.get("Video.RenderMode"), RENDER_MODE_VALUES);
+        applyDriverPresetToLauncher();
         skipIntro.setChecked(Boolean.parseBoolean(config.get("Codes.SkipIntroLogos")));
         validation.setChecked(new File(getFilesDir(), "turnip/vk_layer_settings.txt").isFile());
         gfxCapture.setChecked(new File(AppStorage.driverImportDir(this), "gfxrecon_capture.txt").isFile());
@@ -257,9 +293,10 @@ public final class LauncherActivity extends Activity {
     }
 
     private boolean saveSettings() {
+        applyDriverPresetToLauncher();
         LinkedHashMap<String, String> values = new LinkedHashMap<>();
-        values.put("Video.VulkanDriver", quote(new String[] {"Auto", "System", "Bundled", "Vauzi710", "Imported"}[driverSpinner.getSelectedItemPosition()]));
-        values.put("Video.RenderMode", quote(new String[] {"Auto", "GMEM", "Sysmem"}[renderSpinner.getSelectedItemPosition()]));
+        values.put("Video.VulkanDriver", quote(DRIVER_VALUES[driverSpinner.getSelectedItemPosition()]));
+        values.put("Video.RenderMode", quote(RENDER_MODE_VALUES[renderSpinner.getSelectedItemPosition()]));
         values.put("Codes.SkipIntroLogos", Boolean.toString(skipIntro.isChecked()));
         try {
             patchConfig(AppStorage.configFile(this), values);
@@ -277,7 +314,7 @@ public final class LauncherActivity extends Activity {
     private void launchGame(boolean editControls) {
         if (!saveSettings()) return;
         InstallState current = inspectInstallation();
-        if (!current.ready) {
+        if (!current.ready && !hasStagedGamePackages()) {
             showError(current.message);
             refreshStatuses();
             return;
@@ -317,7 +354,12 @@ public final class LauncherActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (resultCode != RESULT_OK || data == null) return;
+        if (requestCode == REQUEST_GAME_PACKAGES) {
+            stageGamePackages(data);
+            return;
+        }
+        if (data.getData() == null) return;
         switch (requestCode) {
             case REQUEST_GAME_ZIP:
                 startInstall(data.getData(), true, true);
@@ -357,7 +399,7 @@ public final class LauncherActivity extends Activity {
                 total += count;
             }
             if (total == 0) throw new IOException("Selected file is empty");
-            driverSpinner.setSelection(4);
+            driverSpinner.setSelection(DRIVER_IMPORTED);
             Toast.makeText(this, getString(R.string.driver_imported, target.getName()), Toast.LENGTH_LONG).show();
             refreshStatuses();
         } catch (IOException exception) {
@@ -372,7 +414,10 @@ public final class LauncherActivity extends Activity {
     // ------------------------------------------------------------------
 
     private void chooseInstallSource(boolean gameFiles) {
-        String[] items = { getString(R.string.install_source_zip), getString(R.string.install_source_folder) };
+        String[] items = gameFiles
+            ? new String[] { getString(R.string.install_source_zip), getString(R.string.install_source_folder),
+                getString(R.string.install_source_iso_packages) }
+            : new String[] { getString(R.string.install_source_zip), getString(R.string.install_source_folder) };
         new AlertDialog.Builder(this)
             .setTitle(gameFiles ? R.string.launcher_install_game : R.string.launcher_install_mod)
             .setItems(items, (dialog, which) -> {
@@ -383,12 +428,140 @@ public final class LauncherActivity extends Activity {
                     intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
                         "application/zip", "application/x-zip-compressed", "application/octet-stream" });
                     startActivityForResult(intent, gameFiles ? REQUEST_GAME_ZIP : REQUEST_MOD_ZIP);
-                } else {
+                } else if (which == 1) {
                     startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE),
                         gameFiles ? REQUEST_GAME_TREE : REQUEST_MOD_TREE);
+                } else {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    startActivityForResult(intent, REQUEST_GAME_PACKAGES);
                 }
             })
             .show();
+    }
+
+    private void maybeCheckForUpdates() {
+        long lastCheck = prefs.getLong("update_last_check", 0);
+        if (System.currentTimeMillis() - lastCheck >= UPDATE_CHECK_INTERVAL_MS) {
+            checkForUpdates(false);
+        }
+    }
+
+    private void checkForUpdates(boolean manual) {
+        updateButton.setEnabled(false);
+        updateStatus.setText(R.string.update_checking);
+        UpdateManager.check(this, (update, error) -> {
+            updateButton.setEnabled(true);
+            if (error != null) {
+                updateStatus.setText(getString(R.string.update_error, error));
+                return;
+            }
+            prefs.edit().putLong("update_last_check", System.currentTimeMillis()).apply();
+            if (update == null) {
+                updateStatus.setText(getString(R.string.update_up_to_date, UpdateManager.currentVersion(this)));
+                if (manual) Toast.makeText(this, R.string.update_up_to_date_short, Toast.LENGTH_LONG).show();
+                return;
+            }
+            updateStatus.setText(getString(R.string.update_available, update.version));
+            String notes = update.notes != null ? update.notes.trim() : "";
+            if (notes.length() > 3000) notes = notes.substring(0, 3000) + "…";
+            String message = getString(R.string.update_dialog_message, update.version,
+                formatBytes(update.size), notes);
+            new AlertDialog.Builder(this)
+                .setTitle(R.string.update_dialog_title)
+                .setMessage(message)
+                .setNegativeButton(R.string.update_later, null)
+                .setPositiveButton(R.string.update_download, (dialog, which) -> downloadUpdate(update))
+                .show();
+        });
+    }
+
+    private void downloadUpdate(UpdateManager.UpdateInfo update) {
+        updateButton.setEnabled(false);
+        updateStatus.setText(R.string.update_downloading);
+        UpdateManager.download(this, update, new UpdateManager.DownloadCallback() {
+            @Override
+            public void progress(long downloaded, long total) {
+                updateStatus.setText(getString(R.string.update_download_progress,
+                    formatBytes(downloaded), formatBytes(total)));
+            }
+
+            @Override
+            public void complete(String error) {
+                updateButton.setEnabled(true);
+                updateStatus.setText(error == null
+                    ? getString(R.string.update_ready_to_install)
+                    : getString(R.string.update_error, error));
+            }
+        });
+    }
+
+    private boolean hasStagedGamePackages() {
+        File staging = new File(AppStorage.activeGameRoot(this), "to_install");
+        File[] files = staging.listFiles(file -> file.isFile() && !file.getName().endsWith(".part"));
+        return files != null && files.length > 0;
+    }
+
+    private void stageGamePackages(Intent data) {
+        List<Uri> sources = new ArrayList<>();
+        ClipData clip = data.getClipData();
+        if (clip != null) {
+            for (int index = 0; index < clip.getItemCount(); index++) {
+                Uri uri = clip.getItemAt(index).getUri();
+                if (uri != null) sources.add(uri);
+            }
+        } else if (data.getData() != null) {
+            sources.add(data.getData());
+        }
+        if (sources.isEmpty()) return;
+
+        InstallProgress progress = new InstallProgress();
+        progress.label = text(getString(R.string.install_scanning), 15, false);
+        progress.label.setPadding(dp(20), dp(16), dp(20), dp(16));
+        progress.dialog = new AlertDialog.Builder(this)
+            .setTitle(R.string.install_progress_title)
+            .setView(progress.label)
+            .setCancelable(false)
+            .setNegativeButton(R.string.install_cancel, (dialog, which) -> progress.cancelled = true)
+            .show();
+
+        new Thread(() -> {
+            try {
+                File staging = new File(AppStorage.activeGameRoot(this), "to_install");
+                if (!staging.isDirectory() && !staging.mkdirs()) {
+                    throw new IOException("Cannot create " + staging);
+                }
+                for (Uri source : sources) {
+                    if (progress.cancelled) break;
+                    String name = safeName(queryDisplayName(source));
+                    if (name.isEmpty()) name = "source.bin";
+                    File destination = uniqueFile(staging, name);
+                    File temporary = new File(destination.getPath() + ".part");
+                    try {
+                        try (InputStream input = openSourceStream(source)) {
+                            copyStreamToFile(input, temporary, progress);
+                        }
+                        if (progress.cancelled) {
+                            Files.deleteIfExists(temporary.toPath());
+                            break;
+                        }
+                        Files.move(temporary.toPath(), destination.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    } finally {
+                        Files.deleteIfExists(temporary.toPath());
+                    }
+                }
+                finishInstall(progress, progress.cancelled
+                    ? getString(R.string.install_cancelled)
+                    : getString(R.string.install_done_iso_staged), !progress.cancelled);
+            } catch (Exception exception) {
+                String reason = exception.getMessage() != null
+                    ? exception.getMessage() : exception.getClass().getSimpleName();
+                finishInstall(progress, getString(R.string.error_install_failed, reason), false);
+            }
+        }, "iso-stager").start();
     }
 
     /** One copyable file inside the picked source, addressed by a relative path. */
@@ -735,6 +908,13 @@ public final class LauncherActivity extends Activity {
         spinner.setAdapter(adapter);
         parent.addView(spinner, matchWrap());
         return spinner;
+    }
+
+    private void applyDriverPresetToLauncher() {
+        if (driverSpinner == null || renderSpinner == null) return;
+        boolean experimentalA725 = driverSpinner.getSelectedItemPosition() == DRIVER_EXPERIMENTAL_A725;
+        if (experimentalA725) renderSpinner.setSelection(RENDER_MODE_SYSMEM);
+        renderSpinner.setEnabled(!experimentalA725);
     }
 
     private TextView statusText() {

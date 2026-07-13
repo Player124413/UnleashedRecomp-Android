@@ -44,6 +44,8 @@ static constexpr const char *BUNDLED_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a73
 static constexpr const char *BUNDLED_DRIVER_ASSET = "bundled_driver/vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *VAUZI_710_DRIVER_NAME = "vulkan.vauzi710_v2_7.so";
 static constexpr const char *VAUZI_710_DRIVER_ASSET = "bundled_driver/vulkan.vauzi710_v2_7.so";
+static constexpr const char *EXPERIMENTAL_A725_DRIVER_NAME = "vulkan.wb26_2_rp_pair_ccu_color_a725.so";
+static constexpr const char *EXPERIMENTAL_A725_DRIVER_ASSET = "bundled_driver/vulkan.wb26_2_rp_pair_ccu_color_a725.so";
 static constexpr const char *DEFAULT_DRIVER_NAME = "vulkan.unleashed26_1_wfm_a732.so";
 static constexpr const char *LAST_IMPORTED_DRIVER_FILE = "last_imported_driver.txt";
 static constexpr const char *VULKAN_STARTUP_STATE_FILE = "vulkan_startup_state.txt";
@@ -137,6 +139,7 @@ static const char *VulkanDriverName(EAndroidVulkanDriver driver)
         case EAndroidVulkanDriver::System:   return "System";
         case EAndroidVulkanDriver::Bundled:  return "Bundled";
         case EAndroidVulkanDriver::Vauzi710: return "Vauzi710";
+        case EAndroidVulkanDriver::ExperimentalA725: return "ExperimentalA725";
         case EAndroidVulkanDriver::Imported: return "Imported";
         case EAndroidVulkanDriver::Auto:
         default:                             return "Auto";
@@ -280,7 +283,7 @@ static bool ReadVulkanStartupState(VulkanStartupState &state, bool &stateFileExi
             "version=%u\nphase=%63s\nconfigured_driver=%u\nconfigured_render_mode=%u",
             &version, phase, &configuredDriver, &configuredRenderMode) != 4 ||
         version != 1 ||
-        configuredDriver > unsigned(EAndroidVulkanDriver::Vauzi710) ||
+        configuredDriver > unsigned(EAndroidVulkanDriver::ExperimentalA725) ||
         configuredRenderMode > unsigned(EAndroidRenderMode::Sysmem))
     {
         return false;
@@ -815,6 +818,7 @@ static void InstallBundledDriversIfNeeded(const std::filesystem::path &turnipDir
 {
     InstallBundledDriverAsset(turnipDir, BUNDLED_DRIVER_NAME, BUNDLED_DRIVER_ASSET);
     InstallBundledDriverAsset(turnipDir, VAUZI_710_DRIVER_NAME, VAUZI_710_DRIVER_ASSET);
+    InstallBundledDriverAsset(turnipDir, EXPERIMENTAL_A725_DRIVER_NAME, EXPERIMENTAL_A725_DRIVER_ASSET);
     WriteTextFileIfMissing(turnipDir / "driver_name.txt", BUNDLED_DRIVER_NAME);
 }
 
@@ -911,13 +915,19 @@ static bool ReadTrimmedTextFile(const std::filesystem::path &path, char *buffer,
 // managers without root) remains the sole diagnostic override and is never rewritten here.
 // "flushall" is Mesa's expensive full-flush diagnostic. See
 // https://docs.mesa3d.org/drivers/freedreno.html for the full list of TU_DEBUG options.
-static void ApplyRenderMode(EAndroidRenderMode renderMode, bool allowDiagnosticOverride)
+static void ApplyRenderMode(EAndroidRenderMode renderMode, bool allowDiagnosticOverride,
+    const char *driverTuDebugPreset = nullptr)
 {
     char buffer[256]{};
 
     const char *modeName;
     const char *defaultTuDebug;
-    switch (renderMode)
+    if (driverTuDebugPreset != nullptr)
+    {
+        modeName = "Driver preset";
+        defaultTuDebug = driverTuDebugPreset;
+    }
+    else switch (renderMode)
     {
         case EAndroidRenderMode::GMEM:
             modeName = "GMEM";
@@ -941,7 +951,7 @@ static void ApplyRenderMode(EAndroidRenderMode renderMode, bool allowDiagnosticO
 
     if (!allowDiagnosticOverride)
     {
-        LOG("Vulkan boot recovery: external TU_DEBUG override is disabled for the safe fallback startup.");
+        LOG("External TU_DEBUG override is disabled for this driver startup policy.");
         return;
     }
 
@@ -1119,6 +1129,11 @@ void *AndroidGetCustomVulkanLoader()
             LOG("Android Vulkan driver mode: Adreno 710 (Vauzi v2.7).");
             break;
 
+        case EAndroidVulkanDriver::ExperimentalA725:
+            driverName = EXPERIMENTAL_A725_DRIVER_NAME;
+            LOG("Android Vulkan driver mode: A725 Performance (experimental CCU COLOR pair).");
+            break;
+
         case EAndroidVulkanDriver::Imported:
             driverName = GetImportedDriverName(turnipDir);
             LOG("Android Vulkan driver mode: Imported.");
@@ -1198,6 +1213,7 @@ void *AndroidGetCustomVulkanLoader()
     }
 
     EAndroidRenderMode effectiveRenderMode = g_runtimeRenderMode;
+    const char *driverTuDebugPreset = nullptr;
     if (effectiveRenderMode == EAndroidRenderMode::Auto &&
         g_runtimeVulkanDriver == EAndroidVulkanDriver::Vauzi710)
     {
@@ -1205,7 +1221,14 @@ void *AndroidGetCustomVulkanLoader()
         LOG("Adreno 710 Vauzi driver: Auto render mode selects Sysmem as recommended by the driver author.");
     }
 
-    ApplyRenderMode(effectiveRenderMode, true);
+    if (g_runtimeVulkanDriver == EAndroidVulkanDriver::ExperimentalA725)
+    {
+        effectiveRenderMode = EAndroidRenderMode::Sysmem;
+        driverTuDebugPreset = "sysmem,nobin";
+        LOG("A725 Performance experimental driver: forcing TU_DEBUG=sysmem,nobin.");
+    }
+
+    ApplyRenderMode(effectiveRenderMode, driverTuDebugPreset == nullptr, driverTuDebugPreset);
     ApplyLayerSettingsOverride(turnipDir);
 
     void *libVulkan = adrenotools_open_libvulkan(

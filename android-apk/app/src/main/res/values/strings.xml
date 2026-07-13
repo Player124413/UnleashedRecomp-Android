@@ -17,6 +17,12 @@
     <string name="mod_manager_error_directory">Cannot create configuration directory: %1$s</string>
     <string name="mod_manager_error_save">Cannot save the mod database: %1$s</string>
     <string name="mod_manager_error_files">Android Files could not be opened.</string>
+    <string name="mod_settings_title">Mod settings</string>
+    <string name="mod_settings_open">Configure %1$s</string>
+    <string name="mod_settings_save">Save mod settings</string>
+    <string name="mod_settings_saved">Mod settings saved. Restart the game to apply them.</string>
+    <string name="mod_settings_empty">This ConfigSchemaFile contains no supported settings.</string>
+    <string name="mod_settings_error">Could not edit mod settings: %1$s</string>
 
     <string name="launcher_title">Unleashed Recomp</string>
     <string name="launcher_subtitle">Check the installation and configure the game before launch.</string>
@@ -68,11 +74,14 @@
     <string name="launcher_install_mod">Install a mod (.zip / folder)</string>
     <string name="install_source_zip">From a ZIP archive</string>
     <string name="install_source_folder">From a folder</string>
+    <string name="install_source_iso_packages">From ISO / update / DLC packages</string>
     <string name="install_progress_title">Installing…</string>
     <string name="install_progress_status">%1$d files copied, %2$s</string>
     <string name="install_scanning">Reading the source…</string>
     <string name="install_cancel">Cancel</string>
     <string name="install_done_game">Game files installed. The patched executable is prepared automatically on the first launch if needed.</string>
+    <string name="install_done_iso_staged">Installer packages staged. Tap Launch game to verify and install the base game, title update and optional DLC.</string>
+    <string name="launcher_install_staged">Installer packages are ready. Launch the game to verify and install them.</string>
     <string name="install_done_mod">Installed mods: %1$d. Enable them in the mod manager.</string>
     <string name="install_cancelled">Installation cancelled. Partially copied files were left in place.</string>
     <string name="error_install_failed">Installation failed: %1$s</string>
@@ -80,7 +89,7 @@
     <string name="error_install_no_mod">The selected source does not contain a mod.ini, so no mod could be found in it.</string>
 
     <string-array name="driver_labels">
-        <item>Auto (recommended)</item><item>System</item><item>Bundled Turnip</item><item>Adreno 710 (Vauzi)</item><item>Imported</item>
+        <item>Auto (recommended)</item><item>System</item><item>Bundled Turnip</item><item>Adreno 710 (Vauzi)</item><item>A725 Performance (experimental; sysmem+nobin)</item><item>Imported</item>
     </string-array>
     <string-array name="render_mode_labels">
         <item>Auto (recommended)</item><item>GMEM</item><item>Sysmem</item>
@@ -102,4 +111,19 @@
     <string name="launcher_localization">Fan localization</string>
     <string name="launcher_localization_none">None (original game)</string>
     <string name="launcher_localization_summary">Select an optional package from localizations/. Its files override the matching base-language resources without modifying the game dump.</string>
+    <string name="launcher_updates">Application updates</string>
+    <string name="update_current_version">Installed version: %1$s</string>
+    <string name="update_check">Check for updates</string>
+    <string name="update_checking">Checking GitHub for updates…</string>
+    <string name="update_error">Update check failed: %1$s</string>
+    <string name="update_up_to_date">Version %1$s is up to date.</string>
+    <string name="update_up_to_date_short">You already have the latest version.</string>
+    <string name="update_available">Version %1$s is available.</string>
+    <string name="update_dialog_title">Update available</string>
+    <string name="update_dialog_message">Version %1$s (%2$s) is ready to download.\n\n%3$s</string>
+    <string name="update_later">Later</string>
+    <string name="update_download">Download</string>
+    <string name="update_downloading">Downloading the update…</string>
+    <string name="update_download_progress">Downloaded %1$s of %2$s</string>
+    <string name="update_ready_to_install">Update downloaded. Continue in the Android installer.</string>
 </resources>

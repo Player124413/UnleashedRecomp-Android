@@ -1,6 +1,21 @@
 # Bundled Turnip driver
 
-The APK contains two selectable Turnip builds.
+The APK contains three selectable Turnip builds.
+
+## A725 Performance (experimental)
+
+`vulkan.wb26_2_rp_pair_ccu_color_a725.so` is the experimental
+whitebelyash/gen8 `7fdde2f8f8` Mesa 26.2 build supplied as
+`Turnip-NewDriver-wb-26.2-RP-PAIR-CCU-COLOR.zip`. Its driver SHA-256 is
+`87f371a26a4678a092efa0d209be550ccaae0d18c96436aec181d558e53b22b0`.
+The render-pass dependency uses the targeted
+`CCU_CLEAN_COLOR | WAIT_FOR_ME` mask (`0x202`).
+
+The launcher exposes it as **A725 Performance (experimental)** and forces its
+required `TU_DEBUG=sysmem,nobin` preset. It is not selected by Auto and does
+not replace the universal bundled driver. This build is currently validated
+for the Adreno 725 performance/artifact problem only; it must not become the
+default until Adreno 732 support and regression testing are complete.
 
 ## Adreno 710 (Vauzi)
 

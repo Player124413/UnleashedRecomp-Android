@@ -17,10 +17,12 @@ This is an unofficial Android port of [Unleashed Recompiled](https://github.com/
 - The full game, including title screens and regular gameplay
 - ARM64 Android devices
 - Installing the game and mods from a `.zip` or folder directly in the app — no PC needed
+- Staging Xbox 360 base-game, title-update and DLC package files for verified installation on first launch
 - On-screen touch controls with multi-touch, touch camera control, and a drag-to-arrange layout editor; the layout adapts to the game (D-pad in menus, a SKIP button in cutscenes)
 - Bluetooth and USB controllers
 - Sound through speakers, wired headphones, and Bluetooth devices
-- HMM and UMM-style mods through the included **Unleashed Mods** app
+- HMM and UMM-style mods through the included manager, including per-mod `ConfigSchemaFile` settings
+- Signed in-app updates from this repository's GitHub releases
 - Built-in Turnip driver plus importing another driver as a plain `.so` or an AdrenoTools/ExynosTools package `.zip`
 - Game-file access through Android's system Files app
 - App UI in English, Russian, Japanese, German, French, Spanish, Italian, and Portuguese
@@ -49,7 +51,7 @@ For the smoothest first run, start with the default graphics settings. The Andro
 1. Download the latest APK from the repository's [Releases](https://github.com/SansNope/UnleashedRecomp-Android/releases) page.
 2. Allow your browser or file manager to install apps from unknown sources when Android asks.
 3. Install and open **UnleashedRecomp**. The first launch creates the app's folders and prepares the bundled graphics driver.
-4. Tap **Install game files (.zip / folder)** in the launcher and pick your game dump — either a ZIP archive or an extracted folder. The app finds the game inside the archive automatically, however the folders are nested, and copies everything into place with a progress display.
+4. Tap **Install game files (.zip / folder)** in the launcher and pick your game dump — either a ZIP archive or an extracted folder. The app finds the game inside the archive automatically, however the folders are nested, and copies everything into place with a progress display. You can also choose **ISO / update / DLC packages**, select the base game, title update and optional DLC files together, then launch once to verify and install them.
 5. Tap **Launch game**.
 
 A raw dump (`game` + `update`, with optional `dlc`) is enough: if the `patched` folder produced by the desktop installer is missing, the app builds the patched executable itself on first launch. No PC is required at any point.
@@ -95,14 +97,18 @@ USB and Bluetooth controllers supported by SDL should work without additional se
 ## Installing mods
 
 1. Tap **Install a mod (.zip / folder)** in the launcher's Mods card and pick the mod archive or folder. Every mod inside is detected by its `mod.ini` — archives containing several mods install in one go.
-2. Tap **Manage mods**, enable the mods you want, and arrange their priority.
+2. Tap **Manage mods**, enable the mods you want, and arrange their priority. Mods that declare HMM's `ConfigSchemaFile` show a settings button for their own booleans, numbers, text values and lists.
 3. Tap **Save mod list** and restart the game.
 
 Mods can also be copied into the `mods` folder manually through Android Files (each mod in its own folder with a `mod.ini`); tap **Refresh** in the manager afterwards.
 
 The manager writes standard `cpkredir.ini` and `ModsDB.ini` files. Relative paths from desktop mod packs are also supported, so most HMM/UMM layouts can be copied without manually rewriting every path. Desktop-only code mods or mods that depend on Windows DLLs will not work on Android.
 
-The mod manager also has a **Codes** section listing built-in game patches — for example *Homing attack on jump*, *Save score at checkpoints*, or *Skip intro logos*. Tick the ones you want and save the mod list; codes are applied on the next launch ([issue #75](https://github.com/SansNope/UnleashedRecomp-Android/issues/75)).
+The mod manager also has a **Codes** section listing built-in game patches — for example *Homing attack on jump*, *Save score at checkpoints*, or *Skip intro logos*. Tick the ones you want and save the mod list; codes are applied on the next launch. Per-mod schema settings implement [issue #75](https://github.com/SansNope/UnleashedRecomp-Android/issues/75).
+
+## Updating the app
+
+The launcher checks this repository's latest GitHub release periodically and also provides a manual **Check for updates** button. Downloads are limited to the official release path, checked against GitHub's SHA-256 digest when available, and must carry the same Android signing certificate as the installed app before Android's package installer is opened. Game files, saves, mods and settings remain in place during an update.
 
 ## Graphics drivers
 
@@ -120,7 +126,7 @@ Only import drivers from a source you trust. A bad or incompatible Vulkan driver
 
 - **Adreno 710:** first try **Adreno 710 (Vauzi)** with Render Mode **Auto** (Sysmem). The universal bundled driver remains available for comparison and includes a synchronization fix for early-a7xx shimmer.
 - **Adreno 6xx:** if Auto/GMEM shows corruption, hangs, or unexpectedly low performance, try Render Mode **Sysmem**. It forces `TU_DEBUG=sysmem`; it is a workaround to test, not a universal performance win.
-- **Adreno 725:** use the universal bundled driver. It includes a synchronization fix for the one-frame shimmer seen on early a7xx hardware.
+- **Adreno 725:** start with the universal bundled driver. An **A725 Performance (experimental; sysmem+nobin)** choice is also included for affected devices; selecting it automatically locks the required Sysmem mode and `TU_DEBUG=sysmem,nobin`. It is not selected by default and is not intended for Adreno 732 yet.
 - **Adreno 732:** supported through a community device profile based on the closely related Adreno 735.
 - **Adreno 750:** disable MSAA if you see corruption. The known issue is in the Turnip MSAA path; the default Android settings already leave anti-aliasing off.
 - **Adreno 720 / 722:** driver entries are included, but real-device feedback is still needed.

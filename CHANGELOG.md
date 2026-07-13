@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.5.2 (2026-07-13)
+
+Version 0.5.2 replaces the withdrawn 0.5.1 APK. It contains every user-facing change from 0.5.1, removes performance instrumentation that was unintentionally left enabled there, and adds the features below.
+
+### Mod settings (issue #75)
+
+- Mods that declare HMM's `ConfigSchemaFile` now have their own settings button in the Android mod manager.
+- The editor supports HMM boolean, string, integer, floating-point and custom-enum fields, including descriptions, defaults and numeric limits.
+- Values are written atomically to the schema's INI file while unrelated sections, keys and comments are preserved. Schema and target paths are restricted to the mod's own directory.
+
+### In-app updates (issue #83)
+
+- Added automatic periodic checks and a manual **Check for updates** action in the launcher.
+- The app displays the release notes, downloads the official release APK with progress, verifies GitHub's SHA-256 digest when present, and rejects APKs whose package name or signing certificate differs from the installed app.
+- Android's system package installer remains responsible for the actual update; game files, saves, mods and settings are not replaced.
+
+### Install from Xbox 360 packages (PR #78)
+
+- Added **ISO / update / DLC packages** as a game-install source. Select the base game, title update and optional DLC files together; the launcher stages them and the native installer verifies them on first launch.
+- Failed installs are rolled back and the staged source files are retained for retry. Successful installs remove the staging directory.
+- Based on pull request #78 by GdGohan, with Android launcher integration and failure handling added for this release.
+
+### Adreno 725 experimental performance driver
+
+- Added **A725 Performance (experimental; sysmem+nobin)** as an explicit, non-default driver choice.
+- Selecting it forces and locks its required Sysmem render path and exact `TU_DEBUG=sysmem,nobin` preset, ignoring stale manual debug overrides.
+- This build is intended for Adreno 725 testing only. Adreno 732 support is not enabled yet; Auto and the bundled universal driver remain unchanged.
+
+### Performance and diagnostics fix
+
+- Removed the accidentally enabled always-on GPU `PERF` instrumentation from the 0.5.1 build. This instrumentation added per-frame timestamp queries and logging overhead and was not meant for a public release.
+- Corrected the log banner/build ID to `0.5.2-release` so tester logs identify the APK unambiguously.
+
+### Changes carried forward from 0.5.1
+
+#### Achievements
+
+- Fixed achievement-unlock notifications not appearing on Android (issue #65). They previously failed because the game thread was identified incorrectly.
+
+#### Touch controls
+
+- Added an optional 8-way D-pad for normal gameplay (issue #68).
+- The D-pad now also appears on the results and level-up screens.
+- During cutscenes and the attract movie, controls collapse to a single **SKIP** button.
+- Moved **SKIP** to the top-right so it does not cover achievement notifications or subtitles.
+- Increased the default spacing between the A/B/X/Y buttons.
+
+#### In-game settings
+
+- Moved on-screen controls, touch-camera and left-stick settings from the launcher into the in-game **Input** menu.
+- Moved the FPS and profiler toggles into the **Video** menu.
+- The launcher's Graphics driver, Mods and Debug sections are collapsed by default.
+
+#### Mods and saves
+
+- Added a **Codes** section to the mod manager with toggles for built-in game patches, including Homing Attack on Jump, Save Score at Checkpoints and Skip Intro Logos.
+- Added an **Open saves folder** shortcut and a dedicated saves root in the system file picker.
+
+#### Graphics and localisation
+
+- Added an experimental **Force native BC textures** option for devices whose native BC support is incorrectly detected as unavailable (issue #72). It must not be enabled on Adreno/Turnip devices, where it corrupts textures.
+- Completed launcher and app UI translations for all supported languages.
+
 ## 0.5.0 (2026-07-13)
 
 ### Install the game and mods straight from the app
